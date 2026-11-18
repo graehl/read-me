@@ -1,0 +1,69 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d2733">
+  <title>read-me</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/read-me.css">
+  <script type="module" src="/static/read-me.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <h1 id="request-title">Loading…</h1>
+    <span id="progress-count" class="count"></span>
+  </header>
+
+  <section id="setup" class="setup" hidden>
+    <h2>Before you start</h2>
+    <ul class="tips">
+      <li>Use a quiet room. Hold the phone a hand's width to a forearm from your mouth.</li>
+      <li>Use the phone's own microphone or a wired one, not Bluetooth.</li>
+      <li>For each line: tap <b>Record</b>, wait a moment, read, wait a moment, tap <b>Stop</b>.</li>
+    </ul>
+    <p id="request-instructions" class="instructions"></p>
+    <form id="setup-form">
+      <label for="speaker-name">Your name or speaker code</label>
+      <input id="speaker-name" name="speaker" autocomplete="nickname" required
+             pattern="[A-Za-z0-9][A-Za-z0-9._\-]{0,63}" title="Letters, digits, dot, dash or underscore">
+      <button id="start-mic" type="submit" class="primary">Start microphone</button>
+    </form>
+  </section>
+
+  <main id="reader" class="reader" hidden>
+    <nav id="line-chips" class="chips" aria-label="Lines"></nav>
+    <p id="status" class="status"></p>
+
+    <article class="line-card">
+      <p class="line-label" id="line-label"></p>
+      <p class="line-text" id="line-text" lang=""></p>
+    </article>
+
+    <div class="take">
+      <button id="play" type="button" class="icon" aria-label="Play take" disabled>▶</button>
+      <canvas id="waveform" class="waveform" aria-label="Waveform of the current take" role="img"></canvas>
+    </div>
+
+    <div id="findings" class="findings" aria-live="polite"></div>
+
+    <div class="controls">
+      <button id="retry" type="button" disabled>Retry</button>
+      <button id="record" type="button" class="record" aria-keyshortcuts="Space">Record</button>
+      <button id="next" type="button" class="primary" aria-keyshortcuts="Enter" disabled>Next</button>
+    </div>
+    <p class="keys">Keys: Space record/stop · Enter next · R retry · ← → move</p>
+    <label id="mic-picker" class="mic-picker" hidden>Microphone
+      <select id="mic-select"></select>
+    </label>
+  </main>
+
+  <section id="done" class="done" hidden>
+    <h2>All lines recorded</h2>
+    <p>Thank you. You can tap any line above to listen again or re-record it.</p>
+  </section>
+
+  <p id="fatal" class="fatal" role="alert" hidden></p>
+  <audio id="player" preload="auto"></audio>
+</body>
+</html>

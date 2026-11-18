@@ -1,0 +1,13 @@
+{
+  "title": "Demo: five English lines",
+  "language": "en",
+  "instructions": "Read each line the way you would naturally say it. Leave a short pause before and after.",
+  "asr_check": {"metric": "ERn", "min_accuracy": 0.2},
+  "lines": [
+    {"id": "0001", "text": "The bus to the airport leaves every twenty minutes after six."},
+    {"id": "0002", "text": "Could you check whether the pharmacy on Elm Street is still open?"},
+    {"id": "0003", "text": "Honestly, I thought the meeting would never end."},
+    {"id": "0004", "text": "Please transfer three hundred and forty dollars to my savings account."},
+    {"id": "0005", "text": "Turn left at the second light, then keep going until you see the river."}
+  ]
+}

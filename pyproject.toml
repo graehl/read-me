@@ -1,0 +1,13 @@
+[project]
+name = "read-me"
+version = "0.1.0"
+description = "Phone-browser reading-request recorder for speech-recognition training data"
+requires-python = ">=3.11"
+dependencies = []
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 120
