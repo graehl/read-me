@@ -419,7 +419,8 @@ async function startSession(speaker) {
   app.speaker = speaker;
   localStorage.setItem("read-me.speaker", speaker);
   const url = new URL(location.href);
-  url.searchParams.set("speaker", speaker);
+  url.pathname = `/r/${encodeURIComponent(requestId)}/${encodeURIComponent(speaker)}`;
+  url.searchParams.delete("speaker");
   history.replaceState(null, "", url);
   let progress;
   try {
@@ -444,6 +445,8 @@ async function startSession(speaker) {
     app.lines.set(line.id, newLineState(progress.accepted[line.id] ?? null));
   }
   $("setup").hidden = true;
+  $("guide").open = false;
+  $("mic-picker").after($("guide"));
   $("reader").hidden = false;
   app.live = new LiveWaveform($("waveform"));
   clearWaveform($("waveform"));
@@ -499,8 +502,15 @@ async function main() {
   $("request-title").textContent = app.request.title;
   $("line-text").lang = app.request.language;
   $("request-instructions").textContent = app.request.instructions;
+  $("guide-notes").replaceChildren(
+    ...app.request.guide_notes.map((note) => {
+      const item = document.createElement("li");
+      item.textContent = note;
+      return item;
+    }),
+  );
   bindControls();
-  const fromUrl = new URLSearchParams(location.search).get("speaker") || "";
+  const fromUrl = decodeURIComponent(location.pathname.split("/")[3] || "") || new URLSearchParams(location.search).get("speaker") || "";
   const remembered = localStorage.getItem("read-me.speaker") || "";
   $("speaker-name").value = speakerIdPattern().test(fromUrl) ? fromUrl : remembered;
   $("setup").hidden = false;

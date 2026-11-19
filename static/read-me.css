@@ -156,6 +156,40 @@ button.link {
   display: none;
 }
 
+.guide {
+  margin: 0 0 var(--space);
+  color: var(--muted);
+}
+
+.guide summary {
+  cursor: pointer;
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.guide h3 {
+  font-size: 0.95rem;
+  margin: 0.75rem 0 0.25rem;
+  color: var(--ink);
+}
+
+.guide ul {
+  margin: 0;
+  padding-left: 1.2rem;
+}
+
+.guide li + li {
+  margin-top: 0.35rem;
+}
+
+.guide .guide-notes {
+  margin-top: 0.75rem;
+}
+
+.guide-notes:empty {
+  display: none;
+}
+
 #setup-form {
   display: grid;
   gap: 0.5rem;

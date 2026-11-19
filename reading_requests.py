@@ -6,6 +6,7 @@ A request file is JSON in the requests directory, named `<id>.json`:
       "title": "Demo: five English lines",
       "language": "en",                   # required, BCP 47
       "instructions": "optional text shown above the lines",
+      "guide_notes": ["optional request-specific points for the How to record guide"],
       "asr_check": {"metric": "ERn", "min_accuracy": 0.2},   # optional
       "lines": ["First line.", {"id": "0002", "text": "Second line."}]
     }
@@ -59,6 +60,8 @@ class ReadingRequest:
     title: str
     language: str
     instructions: str
+    guide_notes: tuple[str, ...]
+    """Request-specific points added to the page's "How to record" guide."""
     asr_check: AsrCheck
     lines: tuple[ReadingLine, ...]
     revision: str = field(compare=False)
@@ -95,6 +98,10 @@ def parse_reading_request(request_id: str, raw: bytes) -> ReadingRequest:
         raise ReadingRequestError(f"Reading request {request_id}: asr_check.min_accuracy must be a number in [0, 1]")
     asr_check = AsrCheck(metric=str(check_doc.get("metric", default.metric)), min_accuracy=float(min_accuracy))
 
+    guide_notes = doc.get("guide_notes") or []
+    if not isinstance(guide_notes, list) or not all(isinstance(n, str) and n.strip() for n in guide_notes):
+        raise ReadingRequestError(f"Reading request {request_id}: 'guide_notes' must be a list of non-empty strings")
+
     raw_lines = doc.get("lines")
     if not isinstance(raw_lines, list) or not raw_lines:
         raise ReadingRequestError(f"Reading request {request_id}: 'lines' must be a non-empty list")
@@ -119,6 +126,7 @@ def parse_reading_request(request_id: str, raw: bytes) -> ReadingRequest:
         title=str(doc.get("title") or request_id),
         language=language,
         instructions=str(doc.get("instructions") or ""),
+        guide_notes=tuple(" ".join(n.split()) for n in guide_notes),
         asr_check=asr_check,
         lines=tuple(lines),
         revision=hashlib.sha256(raw).hexdigest()[:16],
@@ -126,18 +134,21 @@ def parse_reading_request(request_id: str, raw: bytes) -> ReadingRequest:
 
 
 class ReadingRequestCatalog:
-    """Request files in one directory, re-read on each lookup so edits apply without a restart."""
+    """Request files in one or more directories, re-read on each lookup so edits apply without a restart.
 
-    def __init__(self, directory: Path) -> None:
-        self.directory = directory
+    A directory that does not exist holds no requests; one id in two directories is an error.
+    """
+
+    def __init__(self, *directories: Path) -> None:
+        self.directories = directories
 
     def ids(self) -> list[str]:
-        return sorted(p.stem for p in self.directory.glob("*.json") if is_safe_id(p.stem))
+        return sorted({p.stem for d in self.directories for p in d.glob("*.json") if is_safe_id(p.stem)})
 
     def load(self, request_id: str) -> ReadingRequest | None:
         if not is_safe_id(request_id):
             return None
-        path = self.directory / f"{request_id}.json"
-        if not path.is_file():
-            return None
-        return parse_reading_request(request_id, path.read_bytes())
+        paths = [p for d in self.directories if (p := d / f"{request_id}.json").is_file()]
+        if len(paths) > 1:
+            raise ReadingRequestError(f"Reading request {request_id} is defined twice: {', '.join(map(str, paths))}")
+        return parse_reading_request(request_id, paths[0].read_bytes()) if paths else None

@@ -22,7 +22,8 @@ Requires Python 3.11+ (standard library only) and `ffmpeg`.
 ```
 
 Open `http://localhost:3470/` for the list of reading requests, or
-`/r/<request>?speaker=<code>` for one. The microphone needs a secure origin:
+`/r/<request>/<speaker>` to send one speaker a link to one request (the
+speaker code is filled in; `/r/<request>` asks for it). The microphone needs a secure origin:
 `localhost`, or HTTPS through a reverse proxy or tunnel. The server sets no
 access control of its own; put it behind one (a private link proxy, a tunnel
 with access rules) before sharing it.
@@ -38,23 +39,33 @@ recorder says so and links to the same page in its own tab.
 
 ## Reading requests
 
-One JSON file per request in `requests/` (or `--requests DIR`):
+One JSON file per request, named `<request>.json`, in the repository's
+`requests/` or, for a request that should not be committed (text not cleared
+for publication, an assignment to a particular speaker), in
+`<data>/requests/`. Repeated `--requests DIR` options replace those two.
 
 ```json
 {
   "title": "Demo: five English lines",
   "language": "en",
   "instructions": "Shown above the setup form.",
+  "guide_notes": ["Added to the page's How to record guide."],
   "asr_check": {"metric": "ERn", "min_accuracy": 0.2},
   "lines": [{"id": "0001", "text": "..."}, "plain strings get ids 0001, 0002, ..."]
 }
 ```
 
-`language` is required. `asr_check` is stored now and used once recognizer
-validation exists ([sketch](gaps/sketches/asr-validation.md)); lower
-`min_accuracy` for text known to be hard for current recognizers. Each take
-records the request file's hash, so later edits to a request do not
-misattribute earlier recordings.
+`language` is required and sets the line text's language, so the browser
+picks a suitable font even where no language-specific check exists yet.
+Every request page has a collapsible "How to record" guide (setup, reading
+style, retries, typos, breaks); `guide_notes` adds request-specific points
+such as a warning that some lines are deliberately rude.
+
+`asr_check` is stored now and used once recognizer validation exists
+([sketch](gaps/sketches/asr-validation.md)); lower `min_accuracy` for text
+known to be hard for current recognizers. Each take records the request
+file's hash, so later edits to a request do not misattribute earlier
+recordings.
 
 ## Storage
 

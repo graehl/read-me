@@ -6,7 +6,8 @@
 Routes:
     GET  /healthz
     GET  /                              list of reading requests
-    GET  /r/<request>?speaker=<name>    the recorder page
+    GET  /r/<request>/<speaker>         the recorder page for one speaker (also /r/<request>?speaker=<speaker>,
+                                        or /r/<request> to ask for the speaker code)
     GET  /static/<file>
     GET  /api/requests/<request>
     GET  /api/requests/<request>/speakers/<speaker>/progress
@@ -64,7 +65,7 @@ SECURITY_HEADERS = {
 
 ID = f"({SAFE_ID_PATTERN})"
 SPEAKER_API = rf"^/api/requests/{ID}/speakers/{ID}"
-ROUTE_REQUEST_PAGE = re.compile(rf"^/r/{ID}/?$")
+ROUTE_REQUEST_PAGE = re.compile(rf"^/r/{ID}(?:/{ID})?/?$")
 ROUTE_STATIC = re.compile(r"^/static/([A-Za-z0-9._-]+)$")
 ROUTE_REQUEST = re.compile(rf"^/api/requests/{ID}$")
 ROUTE_PROGRESS = re.compile(SPEAKER_API + r"/progress$")
@@ -316,17 +317,23 @@ def main() -> None:
     )
     parser.add_argument("--data", type=Path, required=True, help="data root for takes; never committed")
     parser.add_argument(
-        "--requests", type=Path, default=REPO_DIR / "requests", help="directory of <id>.json reading requests"
+        "--requests",
+        type=Path,
+        action="append",
+        help="directory of <id>.json reading requests; repeatable (default: the repository's requests/"
+        " and <data>/requests/, which holds requests that are not committed)",
     )
     args = parser.parse_args()
     if shutil.which("ffmpeg") is None:
         sys.exit("read-me: ffmpeg is required to store takes as FLAC")
     args.data.mkdir(parents=True, exist_ok=True)
-    ReadMeHandler.catalog = ReadingRequestCatalog(args.requests)
+    request_dirs = args.requests or [REPO_DIR / "requests", args.data / "requests"]
+    ReadMeHandler.catalog = ReadingRequestCatalog(*request_dirs)
     ReadMeHandler.store = TakeStore(args.data)
     server = ThreadingHTTPServer((args.host, args.port), ReadMeHandler)
+    requests_shown = ",".join(map(str, request_dirs))
     print(
-        f"[serve] read-me on http://{args.host}:{args.port} requests={args.requests} data={args.data}", file=sys.stderr
+        f"[serve] read-me on http://{args.host}:{args.port} requests={requests_shown} data={args.data}", file=sys.stderr
     )
     server.serve_forever()
 

@@ -181,6 +181,8 @@ def test_a_malformed_request_file_does_not_break_the_index(tmp_path: Path):
         {"language": "en", "lines": ["a"], "asr_check": "x"},
         {"language": "en", "lines": ["a"], "asr_check": {"min_accuracy": "high"}},
         {"language": "en", "lines": ["a"], "asr_check": {"min_accuracy": True}},
+        {"language": "en", "lines": ["a"], "guide_notes": "one string"},
+        {"language": "en", "lines": ["a"], "guide_notes": [""]},
     ],
 )
 def test_malformed_request_fields_raise_reading_request_error(doc):
@@ -194,3 +196,27 @@ def test_reading_request_requires_language_and_accepts_plain_string_lines():
     request = parse_reading_request("x", json.dumps({"language": "si", "lines": ["one  line", "two"]}).encode())
     assert [(line.id, line.text) for line in request.lines] == [("0001", "one line"), ("0002", "two")]
     assert request.asr_check.min_accuracy == 0.2
+
+
+def test_requests_come_from_every_directory_and_one_id_may_not_repeat(tmp_path: Path):
+    public, private = tmp_path / "requests", tmp_path / "data" / "requests"
+    public.mkdir()
+    private.mkdir(parents=True)
+    (public / "demo.json").write_text(json.dumps({"language": "en", "lines": ["a"]}))
+    (private / "assigned.json").write_text(
+        json.dumps({"language": "si", "guide_notes": ["Rude lines."], "lines": ["b"]})
+    )
+    catalog = ReadingRequestCatalog(public, private, tmp_path / "missing")
+    assert catalog.ids() == ["assigned", "demo"]
+    assert catalog.load("assigned").guide_notes == ("Rude lines.",)
+    (private / "demo.json").write_text(json.dumps({"language": "en", "lines": ["c"]}))
+    with pytest.raises(ReadingRequestError, match="defined twice"):
+        catalog.load("demo")
+
+
+def test_the_recorder_page_takes_the_speaker_in_its_path(server):
+    base, _ = server
+    for path in ("/r/demo-en", "/r/demo-en/", "/r/demo-en/disney"):
+        with urllib.request.urlopen(base + path) as resp:
+            assert 'id="guide"' in resp.read().decode()
+    assert fetch_bytes(f"{base}/r/demo-en/a/b", {})[0] == 404
