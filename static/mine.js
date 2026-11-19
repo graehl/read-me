@@ -85,9 +85,15 @@ async function main() {
     return;
   }
   renderGroups(takes, token);
-  const all = $("download-all");
-  all.hidden = false;
-  all.addEventListener("click", () => download("/api/mine/takes.zip", "read-me-takes.zip", token));
+  $("download-zip").hidden = false;
+  const includeRetried = $("include-retried");
+  includeRetried.addEventListener("change", () => {
+    $("download-all").textContent = includeRetried.checked ? "Download all takes (.zip)" : "Download kept takes (.zip)";
+  });
+  $("download-all").addEventListener("click", () => {
+    if (includeRetried.checked) download("/api/mine/takes.zip", "read-me-takes.zip", token);
+    else download("/api/mine/kept.zip", "read-me-kept.zip", token);
+  });
 }
 
 main();

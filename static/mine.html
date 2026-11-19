@@ -17,7 +17,10 @@
   <main class="mine">
     <p class="note">Every take recorded in this browser. Access is tied to this browser's storage: another
       device, or clearing this site's data, does not see them.</p>
-    <button id="download-all" type="button" class="primary" hidden>Download all (.zip)</button>
+    <div id="download-zip" class="download-zip" hidden>
+      <button id="download-all" type="button" class="primary">Download kept takes (.zip)</button>
+      <label><input id="include-retried" type="checkbox"> Include retried takes</label>
+    </div>
     <p id="status" class="status" aria-live="polite"></p>
     <div id="groups"></div>
   </main>

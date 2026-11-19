@@ -138,6 +138,8 @@ def test_a_browser_downloads_only_its_own_takes(server):
         manifest = z.read("takes.tsv").decode().splitlines()
     assert names == ["takes.tsv", "tester/demo-en.0001.01.flac", "tester/demo-en.0001.02.flac"]
     assert manifest[2].split("\t")[5] == "yes"
+    with zipfile.ZipFile(io.BytesIO(fetch_bytes(f"{base}/api/mine/kept.zip", mine)[1])) as z:
+        assert sorted(z.namelist()) == ["takes.tsv", "tester/demo-en.0001.02.flac"]
 
     with (data_root / "owners" / f"{owner_key('ab' * 24)}.jsonl").open("a", encoding="utf-8") as f:
         f.write('{"request_id": "demo-en", "spea')

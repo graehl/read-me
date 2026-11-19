@@ -122,9 +122,10 @@ records/stops, Enter keeps, R retries, arrows move between lines.
 ## Your recordings
 
 `/mine` lists every take recorded in the current browser, as
-`<request>.<line>.<NN>.flac`, with single downloads and a zip of all of them
-(one folder per speaker code, plus a `takes.tsv` manifest with each line's
-text and whether the take was kept). A speaker reaches it from the request
+`<request>.<line>.<NN>.flac`, with single downloads and a zip of the kept
+takes, or of all of them with "Include retried takes" (one folder per
+speaker code, plus a `takes.tsv` manifest with each line's text and whether
+the take was kept). A speaker reaches it from the request
 list or from the recorder once all lines are done.
 
 Access uses a random token the page keeps in local storage and sends with

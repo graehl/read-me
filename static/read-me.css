@@ -411,6 +411,19 @@ button.record.recording {
   margin: 0 0 var(--space);
 }
 
+.download-zip {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.6rem 1rem;
+}
+
+.download-zip label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
 .mine h2 {
   font-size: 1rem;
   margin: var(--space) 0 0.25rem;

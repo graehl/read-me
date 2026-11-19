@@ -16,7 +16,8 @@ Routes:
     GET  /mine                          the takes this browser uploaded, for download
     GET  /api/mine                      list of those takes
     GET  /api/mine/takes/<request>/<speaker>/<line>/<take>.flac
-    GET  /api/mine/takes.zip            all of them, with a takes.tsv manifest
+    GET  /api/mine/kept.zip             the kept ones, with a takes.tsv manifest
+    GET  /api/mine/takes.zip            all of them, retried takes included
 
 Header X-Read-Me-Owner carries the browser's owner token: optional on take uploads, required on /api/mine.
 """
@@ -169,6 +170,9 @@ class ReadMeHandler(BaseHTTPRequestHandler):
             return self.send_json(200, {"takes": [owned_take_json(take) for take in takes]})
         if path == "/api/mine/takes.zip":
             return self.send_body(200, owned_takes_zip(self.store, takes), "application/zip", "read-me-takes.zip")
+        if path == "/api/mine/kept.zip":
+            kept = [take for take in takes if take.accepted]
+            return self.send_body(200, owned_takes_zip(self.store, kept), "application/zip", "read-me-kept.zip")
         if m := ROUTE_MINE_TAKE.match(path):
             take = next((t for t in takes if (t.request_id, t.speaker, t.line_id, t.take_id) == m.groups()), None)
             if take is None:
