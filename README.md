@@ -66,6 +66,7 @@ takes/<request>/<speaker>/<line>/<take>.json   line text, request hash, capture
                                                settings, browser checks
 takes/<request>/<speaker>/accepted.json        line -> accepted take
 takes/<request>/<speaker>/events.jsonl         every take and accept, in order
+owners/<owner key>.jsonl                       takes uploaded by one browser
 ```
 
 The server stores 16 kHz FLAC, the form our recognizers train on, resampled
@@ -109,6 +110,22 @@ line's state as results arrive (✓ kept, ! kept with a warning, ✕ kept despit
 a failed check, ⚠ not saved). A failed check disables Next; "Use this take
 anyway" overrides it, and the override is recorded. On desktop: Space
 records/stops, Enter keeps, R retries, arrows move between lines.
+
+## Your recordings
+
+`/mine` lists every take recorded in the current browser, as
+`<request>.<line>.<NN>.flac`, with single downloads and a zip of all of them
+(one folder per speaker code, plus a `takes.tsv` manifest with each line's
+text and whether the take was kept). A speaker reaches it from the request
+list or from the recorder once all lines are done.
+
+Access uses a random token the page keeps in local storage and sends with
+each upload; the server stores only its sha256 hash. Another device, or
+clearing the site's data, cannot see those takes, and knowing a speaker code
+grants nothing. This is a courtesy until
+[speaker accounts](gaps/sketches/speaker-accounts.md) replace it. Takes
+uploaded before the token existed are not listed. The zip is built in
+memory, which suits sessions of up to a few hundred takes.
 
 ## Planned work
 

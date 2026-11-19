@@ -15,6 +15,9 @@ worth to them (payment, credit, or nothing, as agreed).
 - Invitation links per speaker and request, carrying a revocable token;
   signing in binds the token to an account. No passwords to start: link plus
   an emailed or messaged one-time code when the link is reused elsewhere.
+- Replaces the per-browser owner token behind `/mine` (README § Your
+  recordings): on first sign-in, bind that browser's owner key to the
+  account so its earlier takes carry over, then gate `/mine` on the account.
 - Speaker codes stay pseudonymous in stored takes; the mapping to a real
   person lives in a separate, access-restricted table.
 - A work record per speaker and request built from `events.jsonl`: takes,

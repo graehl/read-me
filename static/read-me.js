@@ -14,6 +14,7 @@ import {
   uploadQueued,
 } from "./line-progress.js";
 import { MicCapture, encodeWav16, listAudioInputs, voiceProcessingLeftOn } from "./mic-capture.js";
+import { OWNER_HEADER, ownerToken } from "./owner-token.js";
 import { analyzeTake, worstLevel } from "./take-checks.js";
 import { LiveWaveform, clearWaveform, drawTake } from "./waveform.js";
 
@@ -93,7 +94,11 @@ async function uploadTake(line, take) {
       renderChips();
       const saved = await fetchJson(url, {
         method: "POST",
-        headers: { "Content-Type": "audio/wav", "X-Read-Me-Take": encodeURIComponent(JSON.stringify(report)) },
+        headers: {
+          "Content-Type": "audio/wav",
+          "X-Read-Me-Take": encodeURIComponent(JSON.stringify(report)),
+          [OWNER_HEADER]: ownerToken(),
+        },
         body: take.wav,
       });
       take.takeId = saved.take_id;

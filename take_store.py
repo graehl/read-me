@@ -7,13 +7,18 @@ Layout under the data root (never committed):
                                                    text, capture settings, client checks
     takes/<request>/<speaker>/accepted.json        line id -> accepted take
     takes/<request>/<speaker>/events.jsonl         append-only take/accept history
+    owners/<owner key>.jsonl                       takes uploaded by one browser, in order
 
 A take whose sidecar is missing was interrupted mid-write and is ignored.
 Ids arrive path-safe: the HTTP layer validates them against `SAFE_ID`.
+
+An owner key is the sha256 of the random token a browser keeps in local storage and sends with each
+upload; it lets that browser list and download its own takes. The token itself is never stored.
 """
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import secrets
@@ -39,6 +44,31 @@ class StoredTake:
     take_id: str
     duration_s: float
     source_sample_rate: int
+
+
+@dataclass(frozen=True)
+class OwnedTake:
+    """One take as listed to the browser that uploaded it."""
+
+    request_id: str
+    speaker: str
+    line_id: str
+    take_id: str
+    number: int
+    """1-based order of this take among the owner's takes of the same line."""
+    line_text: str
+    duration_s: float
+    received_at: str
+    accepted: bool
+
+    @property
+    def file_name(self) -> str:
+        return f"{self.request_id}.{self.line_id}.{self.number:02d}.flac"
+
+
+def owner_key(owner_token: str) -> str:
+    """Storage key for a browser's owner token."""
+    return hashlib.sha256(owner_token.encode()).hexdigest()
 
 
 def utc_now() -> str:
@@ -128,7 +158,9 @@ class TakeStore:
         wav_bytes: bytes,
         client_report: dict,
         user_agent: str,
+        owner: str | None = None,
     ) -> StoredTake:
+        """Store one take; `owner` is the uploading browser's owner key, when it sent a token."""
         rate, seconds = read_pcm_wav(wav_bytes)
         speaker_dir = self.speaker_dir(request.id, speaker)
         line_dir = speaker_dir / line.id
@@ -155,13 +187,61 @@ class TakeStore:
             "stored_sample_rate": STORED_SAMPLE_RATE,
             "duration_s": round(seconds, 3),
             "user_agent": user_agent,
+            "owner_key": owner,
             "client": client_report,
         }
         write_json_atomic(line_dir / f"{take_id}.json", sidecar)
         self._append_event(
             speaker_dir, {"event": "take", "at": sidecar["received_at"], "line_id": line.id, "take_id": take_id}
         )
+        if owner:
+            owners_dir = self.root / "owners"
+            owners_dir.mkdir(exist_ok=True)
+            entry = {"request_id": request.id, "speaker": speaker, "line_id": line.id, "take_id": take_id}
+            with (owners_dir / f"{owner}.jsonl").open("a", encoding="utf-8") as f:
+                f.write(json.dumps(entry) + "\n")
         return StoredTake(take_id=take_id, duration_s=seconds, source_sample_rate=rate)
+
+    def take_path(self, take: OwnedTake) -> Path:
+        return self.speaker_dir(take.request_id, take.speaker) / take.line_id / f"{take.take_id}.flac"
+
+    def owned_takes(self, owner: str) -> list[OwnedTake]:
+        """The takes one browser uploaded, oldest first; a take whose files are gone is skipped."""
+        index = self.root / "owners" / f"{owner}.jsonl"
+        if not index.is_file():
+            return []
+        accepted_by_speaker: dict[tuple[str, str], dict] = {}
+        numbers: dict[tuple[str, str, str], int] = {}
+        takes = []
+        for raw in index.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(raw)
+            request_id, speaker, line_id, take_id = (entry[k] for k in ("request_id", "speaker", "line_id", "take_id"))
+            speaker_dir = self.speaker_dir(request_id, speaker)
+            sidecar_path = speaker_dir / line_id / f"{take_id}.json"
+            if not (sidecar_path.is_file() and sidecar_path.with_suffix(".flac").is_file()):
+                continue
+            sidecar = json.loads(sidecar_path.read_text(encoding="utf-8"))
+            if (request_id, speaker) not in accepted_by_speaker:
+                accepted_path = speaker_dir / "accepted.json"
+                accepted_by_speaker[request_id, speaker] = (
+                    json.loads(accepted_path.read_text()) if accepted_path.exists() else {}
+                )
+            line_key = (request_id, speaker, line_id)
+            numbers[line_key] = numbers.get(line_key, 0) + 1
+            takes.append(
+                OwnedTake(
+                    request_id=request_id,
+                    speaker=speaker,
+                    line_id=line_id,
+                    take_id=take_id,
+                    number=numbers[line_key],
+                    line_text=sidecar["line_text"],
+                    duration_s=sidecar["duration_s"],
+                    received_at=sidecar["received_at"],
+                    accepted=accepted_by_speaker[request_id, speaker].get(line_id, {}).get("take_id") == take_id,
+                )
+            )
+        return takes
 
     def accept_take(self, request_id: str, speaker: str, line_id: str, take_id: str, override: bool) -> None:
         """Mark a stored take as the one to use for its line; earlier takes stay on disk."""

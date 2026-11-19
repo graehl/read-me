@@ -377,6 +377,38 @@ button.record.recording {
   margin: 0.5rem 0;
 }
 
+.mine .note {
+  color: var(--muted);
+  margin: 0 0 var(--space);
+}
+
+.mine h2 {
+  font-size: 1rem;
+  margin: var(--space) 0 0.25rem;
+}
+
+.take-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.take-list li {
+  padding: 0.45rem 0;
+  border-bottom: 1px solid var(--line);
+  overflow-wrap: anywhere;
+}
+
+.take-list a {
+  color: var(--accent);
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}
+
+.take-detail {
+  color: var(--muted);
+}
+
 @media (prefers-reduced-motion: no-preference) {
   button {
     transition: background-color 120ms, color 120ms;

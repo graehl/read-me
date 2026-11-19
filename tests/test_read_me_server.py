@@ -13,6 +13,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import wave
+import zipfile
 from http.server import ThreadingHTTPServer
 from pathlib import Path
 
@@ -99,6 +100,47 @@ def test_rejects_unknown_takes_non_wav_and_cross_origin_posts(server):
     assert call(f"{api}/lines/9999/takes", tone_wav(), {"Content-Type": "audio/wav"})[0] == 404
     cross = {"Content-Type": "audio/wav", "Origin": "https://evil.example"}
     assert call(f"{api}/lines/0001/takes", tone_wav(), cross)[0] == 403
+
+
+def fetch_bytes(url: str, headers: dict) -> tuple[int, bytes]:
+    try:
+        with urllib.request.urlopen(urllib.request.Request(url, headers=headers)) as resp:
+            return resp.status, resp.read()
+    except urllib.error.HTTPError as err:
+        return err.code, err.read()
+
+
+def test_a_browser_downloads_only_its_own_takes(server):
+    base, _ = server
+    mine, other = {"X-Read-Me-Owner": "ab" * 24}, {"X-Read-Me-Owner": "cd" * 24}
+    upload = {"Content-Type": "audio/wav"}
+    api = f"{base}/api/requests/demo-en/speakers/tester/lines"
+    call(f"{api}/0001/takes", tone_wav(), {**upload, **mine})
+    kept = call(f"{api}/0001/takes", tone_wav(), {**upload, **mine})[1]["take_id"]
+    call(f"{api}/0002/takes", tone_wav(), {**upload, **other})
+    call(f"{api}/0003/takes", tone_wav(), upload)
+    call(f"{api}/0001/accept", json.dumps({"take_id": kept, "override": False}).encode())
+
+    status, listing = call(f"{base}/api/mine", headers=mine)
+    takes = listing["takes"]
+    assert status == 200
+    assert [(t["file_name"], t["accepted"]) for t in takes] == [
+        ("demo-en.0001.01.flac", False),
+        ("demo-en.0001.02.flac", True),
+    ]
+    status, flac = fetch_bytes(base + takes[1]["url"], mine)
+    assert status == 200 and flac.startswith(b"fLaC")
+    assert fetch_bytes(base + takes[1]["url"], other)[0] == 404
+
+    status, archive = fetch_bytes(f"{base}/api/mine/takes.zip", mine)
+    with zipfile.ZipFile(io.BytesIO(archive)) as z:
+        names = sorted(z.namelist())
+        manifest = z.read("takes.tsv").decode().splitlines()
+    assert names == ["takes.tsv", "tester/demo-en.0001.01.flac", "tester/demo-en.0001.02.flac"]
+    assert manifest[2].split("\t")[5] == "yes"
+
+    assert call(f"{base}/api/mine")[0] == 401
+    assert call(f"{base}/api/mine", headers={"X-Read-Me-Owner": "not-hex"})[0] == 400
 
 
 def test_malformed_posts_get_400_not_a_dropped_connection(server):

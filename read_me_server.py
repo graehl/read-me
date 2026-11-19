@@ -13,25 +13,34 @@ Routes:
     POST /api/requests/<request>/speakers/<speaker>/lines/<line>/takes    body: mono 16-bit WAV,
          header X-Read-Me-Take: percent-encoded JSON client report (capture settings, checks)
     POST /api/requests/<request>/speakers/<speaker>/lines/<line>/accept   body: {"take_id", "override"}
+    GET  /mine                          the takes this browser uploaded, for download
+    GET  /api/mine                      list of those takes
+    GET  /api/mine/takes/<request>/<speaker>/<line>/<take>.flac
+    GET  /api/mine/takes.zip            all of them, with a takes.tsv manifest
+
+Header X-Read-Me-Owner carries the browser's owner token: optional on take uploads, required on /api/mine.
 """
 
 from __future__ import annotations
 
 import argparse
 import html
+import io
 import json
 import os
 import re
 import shutil
 import sys
 import traceback
+import zipfile
 from collections.abc import Callable
+from dataclasses import asdict
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
 from reading_requests import SAFE_ID_PATTERN, ReadingRequestCatalog, ReadingRequestError, is_safe_id
-from take_store import TakeRejected, TakeStore
+from take_store import OwnedTake, TakeRejected, TakeStore, owner_key
 
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
@@ -59,6 +68,9 @@ ROUTE_REQUEST = re.compile(rf"^/api/requests/{ID}$")
 ROUTE_PROGRESS = re.compile(SPEAKER_API + r"/progress$")
 ROUTE_TAKES = re.compile(SPEAKER_API + rf"/lines/{ID}/takes$")
 ROUTE_ACCEPT = re.compile(SPEAKER_API + rf"/lines/{ID}/accept$")
+ROUTE_MINE_TAKE = re.compile(rf"^/api/mine/takes/{ID}/{ID}/{ID}/{ID}\.flac$")
+OWNER_HEADER = "X-Read-Me-Owner"
+OWNER_TOKEN = re.compile(r"^[0-9a-f]{32,128}$")
 
 
 class BadRequest(ValueError):
@@ -73,10 +85,12 @@ class ReadMeHandler(BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: object) -> None:
         sys.stderr.write(f"[http] {self.address_string()} {format % args}\n")
 
-    def send_body(self, status: int, body: bytes, content_type: str) -> None:
+    def send_body(self, status: int, body: bytes, content_type: str, download_name: str | None = None) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
+        if download_name:
+            self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
         self.end_headers()
@@ -128,6 +142,35 @@ class ReadMeHandler(BaseHTTPRequestHandler):
             return self.send_json(200, request.to_json())
         if m := ROUTE_PROGRESS.match(path):
             return self.send_json(200, self.store.progress(m.group(1), m.group(2)))
+        if path == "/mine":
+            return self.send_static("mine.html")
+        if path.startswith("/api/mine"):
+            return self.send_owned_takes(path)
+        self.send_error_json(404, "Not found")
+
+    def request_owner(self) -> str | None:
+        """The owner key for this request's owner token, or None when it sent none."""
+        token = self.headers.get(OWNER_HEADER)
+        if token is None:
+            return None
+        if not OWNER_TOKEN.match(token):
+            raise BadRequest(f"{OWNER_HEADER} must be 32 to 128 lowercase hex digits")
+        return owner_key(token)
+
+    def send_owned_takes(self, path: str) -> None:
+        owner = self.request_owner()
+        if owner is None:
+            return self.send_error_json(401, f"Missing {OWNER_HEADER} header")
+        takes = self.store.owned_takes(owner)
+        if path == "/api/mine":
+            return self.send_json(200, {"takes": [owned_take_json(take) for take in takes]})
+        if path == "/api/mine/takes.zip":
+            return self.send_body(200, owned_takes_zip(self.store, takes), "application/zip", "read-me-takes.zip")
+        if m := ROUTE_MINE_TAKE.match(path):
+            take = next((t for t in takes if (t.request_id, t.speaker, t.line_id, t.take_id) == m.groups()), None)
+            if take is None:
+                return self.send_error_json(404, "Not one of this browser's takes")
+            return self.send_body(200, self.store.take_path(take).read_bytes(), "audio/flac", take.file_name)
         self.send_error_json(404, "Not found")
 
     def route_post(self, path: str) -> None:
@@ -154,7 +197,9 @@ class ReadMeHandler(BaseHTTPRequestHandler):
             '<!doctype html><html lang="en"><meta charset="utf-8">'
             '<meta name="viewport" content="width=device-width, initial-scale=1">'
             '<title>read-me</title><link rel="icon" href="data:,"><link rel="stylesheet" href="static/read-me.css">'
-            '<main class="index"><h1>Reading requests</h1><ul>' + "".join(items) + "</ul></main></html>"
+            '<main class="index"><h1>Reading requests</h1><ul>'
+            + "".join(items)
+            + '</ul><p><a href="mine">Your recordings</a></p></main></html>'
         )
         self.send_body(200, body.encode(), "text/html; charset=utf-8")
 
@@ -205,7 +250,13 @@ class ReadMeHandler(BaseHTTPRequestHandler):
         except json.JSONDecodeError:
             client_report = {"unparsed": report_header[:2000]}
         take = self.store.save_take(
-            request, line, speaker, self.read_body(), client_report, self.headers.get("User-Agent", "")
+            request,
+            line,
+            speaker,
+            self.read_body(),
+            client_report,
+            self.headers.get("User-Agent", ""),
+            owner=self.request_owner(),
         )
         self.send_json(
             201,
@@ -215,6 +266,39 @@ class ReadMeHandler(BaseHTTPRequestHandler):
                 "source_sample_rate": take.source_sample_rate,
             },
         )
+
+
+def owned_take_json(take: OwnedTake) -> dict:
+    doc = asdict(take)
+    doc["file_name"] = take.file_name
+    doc["url"] = f"/api/mine/takes/{take.request_id}/{take.speaker}/{take.line_id}/{take.take_id}.flac"
+    return doc
+
+
+def owned_takes_zip(store: TakeStore, takes: list[OwnedTake]) -> bytes:
+    """A zip of the takes, one folder per speaker code, plus a takes.tsv manifest of line texts."""
+    manifest = ["file\trequest\tspeaker\tline\ttake_id\tkept\tduration_s\tline_text"]
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as archive:
+        for take in takes:
+            name = f"{take.speaker}/{take.file_name}"
+            archive.write(store.take_path(take), name)
+            manifest.append(
+                "\t".join(
+                    [
+                        name,
+                        take.request_id,
+                        take.speaker,
+                        take.line_id,
+                        take.take_id,
+                        "yes" if take.accepted else "no",
+                        f"{take.duration_s:.3f}",
+                        take.line_text,
+                    ]
+                )
+            )
+        archive.writestr("takes.tsv", "\n".join(manifest) + "\n")
+    return buf.getvalue()
 
 
 def main() -> None:
