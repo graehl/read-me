@@ -13,7 +13,7 @@ import {
   releasableTakes,
   uploadQueued,
 } from "./line-progress.js";
-import { MicCapture, encodeWav16, listAudioInputs, voiceProcessingLeftOn } from "./mic-capture.js";
+import { MicCapture, encodeWav24, listAudioInputs, voiceProcessingLeftOn } from "./mic-capture.js";
 import { OWNER_HEADER, ownerToken } from "./owner-token.js";
 import { TAIL_CHECK_SECONDS, analyzeTake, tailSpeechCheck, worstLevel } from "./take-checks.js";
 import { LiveWaveform, clearWaveform, drawTake } from "./waveform.js";
@@ -191,7 +191,7 @@ async function stopRecording() {
   if (leftOn.length) {
     analysis.findings.push({ id: "voice-processing", level: "warn", message: `The browser kept ${leftOn.join(", ")} on.` });
   }
-  const wav = encodeWav16(samples, app.mic.sampleRate);
+  const wav = encodeWav24(samples, app.mic.sampleRate);
   const state = lineState(line);
   const take = {
     index: state.takes.length + 1,

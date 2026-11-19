@@ -27,14 +27,17 @@ from take_store import TakeStore, owner_key
 REPO = Path(__file__).resolve().parents[1]
 
 
-def tone_wav(seconds: float = 1.5, rate: int = 48000) -> bytes:
-    frames = b"".join(
-        struct.pack("<h", int(8000 * math.sin(2 * math.pi * 220 * i / rate))) for i in range(int(seconds * rate))
-    )
+def tone_wav(seconds: float = 1.5, rate: int = 48000, bits: int = 16, fine: bool = True) -> bytes:
+    """A 220 Hz tone; at 24 bits, `fine=False` leaves the low byte zero as a 16-bit converter would."""
+    values = [int(8000 * math.sin(2 * math.pi * 220 * i / rate)) for i in range(int(seconds * rate))]
+    if bits == 16:
+        frames = b"".join(struct.pack("<h", v) for v in values)
+    else:
+        frames = b"".join(struct.pack("<i", (v << 8) + (i % 7 if fine else 0))[:3] for i, v in enumerate(values))
     buf = io.BytesIO()
     with wave.open(buf, "wb") as w:
         w.setnchannels(1)
-        w.setsampwidth(2)
+        w.setsampwidth(bits // 8)
         w.setframerate(rate)
         w.writeframes(frames)
     return buf.getvalue()
@@ -263,3 +266,38 @@ def test_the_first_owner_login_sets_the_password_and_unlocks_every_take(server):
     assert len(zip_names("/api/owner/takes.zip")) == 3
     assert zip_names("/api/owner/demo-en/b/takes.zip") == ["b/demo-en.0002.01.flac"]
     assert fetch_bytes(f"{base}/api/owner/takes.zip", {"Cookie": cookie.replace("owner.", "evil.")})[0] == 401
+
+
+def flac_format(path: Path) -> str:
+    out = subprocess.run(
+        ["ffprobe", "-v", "error", "-show_entries", "stream=sample_rate,bits_per_raw_sample", "-of", "csv=p=0", path],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    return out.stdout.strip()
+
+
+def test_a_take_is_also_kept_at_its_capture_rate_and_precision(server):
+    base, data_root = server
+    api = f"{base}/api/requests/demo-en/speakers/hifi/lines"
+    upload = {"Content-Type": "audio/wav"}
+    fine = call(f"{api}/0001/takes", tone_wav(bits=24, fine=True), upload)[1]["take_id"]
+    coarse = call(f"{api}/0002/takes", tone_wav(bits=24, fine=False), upload)[1]["take_id"]
+    takes = data_root / "takes" / "demo-en" / "hifi"
+
+    assert flac_format(takes / "0001" / f"{fine}.flac") == "16000,16"
+    assert flac_format(takes / "0001" / f"{fine}.orig.flac") == "48000,24"
+    assert flac_format(takes / "0002" / f"{coarse}.orig.flac") == "48000,16"
+    sidecar = json.loads((takes / "0002" / f"{coarse}.json").read_text())
+    assert (sidecar["source_bits"], sidecar["source_effective_bits"]) == (24, 16)
+
+    _, cookie = login(base, "owner", "pw")
+    with zipfile.ZipFile(io.BytesIO(fetch_bytes(f"{base}/api/owner/hifi/takes.orig.zip", {"Cookie": cookie})[1])) as z:
+        assert z.namelist() == ["takes.tsv"]
+    archive = fetch_bytes(f"{base}/api/owner/demo-en/hifi/takes.orig.zip", {"Cookie": cookie})[1]
+    with zipfile.ZipFile(io.BytesIO(archive)) as z:
+        assert sorted(z.namelist()) == ["hifi/demo-en.0001.01.orig.flac", "hifi/demo-en.0002.01.orig.flac", "takes.tsv"]
+        assert z.read("takes.tsv").decode().splitlines()[1].split("\t")[7] == "48000"
+    single = f"{base}/api/owner/takes/demo-en/hifi/0001/{fine}.orig.flac"
+    assert fetch_bytes(single, {"Cookie": cookie})[1].startswith(b"fLaC")

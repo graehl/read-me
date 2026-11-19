@@ -203,26 +203,34 @@ export function voiceProcessingLeftOn(settings) {
 }
 
 /** Encode mono Float32 samples as 16-bit PCM WAV. */
-export function encodeWav16(samples, sampleRate) {
-  const buffer = new ArrayBuffer(44 + samples.length * 2);
+/**
+ * Mono 24-bit PCM WAV of float samples, so a converter finer than 16 bits keeps its precision.
+ * Samples scale by 2^23 exactly: audio that came from a 16-bit converter lands on multiples of
+ * 256, which the server detects and FLAC stores without cost.
+ */
+export function encodeWav24(samples, sampleRate) {
+  const bytes = 3;
+  const buffer = new ArrayBuffer(44 + samples.length * bytes);
   const view = new DataView(buffer);
   const ascii = (offset, text) => [...text].forEach((c, i) => view.setUint8(offset + i, c.charCodeAt(0)));
   ascii(0, "RIFF");
-  view.setUint32(4, 36 + samples.length * 2, true);
+  view.setUint32(4, 36 + samples.length * bytes, true);
   ascii(8, "WAVE");
   ascii(12, "fmt ");
   view.setUint32(16, 16, true);
   view.setUint16(20, 1, true);
   view.setUint16(22, 1, true);
   view.setUint32(24, sampleRate, true);
-  view.setUint32(28, sampleRate * 2, true);
-  view.setUint16(32, 2, true);
-  view.setUint16(34, 16, true);
+  view.setUint32(28, sampleRate * bytes, true);
+  view.setUint16(32, bytes, true);
+  view.setUint16(34, 8 * bytes, true);
   ascii(36, "data");
-  view.setUint32(40, samples.length * 2, true);
+  view.setUint32(40, samples.length * bytes, true);
   for (let i = 0; i < samples.length; i++) {
-    const s = Math.max(-1, Math.min(1, samples[i]));
-    view.setInt16(44 + i * 2, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+    const v = Math.max(-0x800000, Math.min(0x7fffff, Math.round(samples[i] * 0x800000)));
+    const offset = 44 + i * bytes;
+    view.setUint8(offset, v & 0xff);
+    view.setInt16(offset + 1, v >> 8, true);
   }
   return new Blob([buffer], { type: "audio/wav" });
 }

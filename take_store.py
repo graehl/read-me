@@ -3,6 +3,8 @@
 Layout under the data root (never committed):
 
     takes/<request>/<speaker>/<line>/<take>.flac   16 kHz mono FLAC
+    takes/<request>/<speaker>/<line>/<take>.orig.flac   the same at the browser's capture rate
+                                                   (absent for takes stored before 2026-11-19)
     takes/<request>/<speaker>/<line>/<take>.json   sidecar: request revision, line
                                                    text, capture settings, client checks
     takes/<request>/<speaker>/accepted.json        line id -> accepted take
@@ -34,6 +36,8 @@ from reading_requests import ReadingLine, ReadingRequest
 
 MAX_TAKE_SECONDS = 90.0
 STORED_SAMPLE_RATE = 16000
+ORIGINAL_SUFFIX = ".orig.flac"
+"""File suffix of a take kept at its capture rate, beside the 16 kHz `<take>.flac`."""
 
 
 class TakeRejected(ValueError):
@@ -65,10 +69,18 @@ class ListedTake:
     duration_s: float
     received_at: str
     accepted: bool
+    source_sample_rate: int
+    has_original: bool
+    """Whether the take is also kept at its capture rate (`ORIGINAL_SUFFIX`)."""
 
     @property
     def file_name(self) -> str:
-        return f"{self.request_id}.{self.line_id}.{self.number:02d}.flac"
+        return self.download_name(original=False)
+
+    def download_name(self, original: bool) -> str:
+        """`<request>.<line>.<NN>.flac`, or `.orig.flac` for the capture-rate file when the take has one."""
+        suffix = ORIGINAL_SUFFIX if original and self.has_original else ".flac"
+        return f"{self.request_id}.{self.line_id}.{self.number:02d}{suffix}"
 
 
 def owner_key(owner_token: str) -> str:
@@ -84,8 +96,18 @@ def new_take_id() -> str:
     return time.strftime("%Y%m%dT%H%M%SZ", time.gmtime()) + "-" + secrets.token_hex(3)
 
 
-def read_pcm_wav(wav_bytes: bytes) -> tuple[int, float]:
-    """Check an upload is mono 16-bit PCM WAV; return (sample rate, seconds)."""
+@dataclass(frozen=True)
+class PcmUpload:
+    sample_rate: int
+    seconds: float
+    bits: int
+    """Sample width of the upload: 16, or 24 from current pages."""
+    effective_bits: int
+    """16 when a 24-bit upload's low byte is always zero: the capture chain delivered only 16 bits."""
+
+
+def read_pcm_wav(wav_bytes: bytes) -> PcmUpload:
+    """Check an upload is mono 16- or 24-bit PCM WAV and describe it."""
     try:
         with wave.open(io.BytesIO(wav_bytes)) as wav:
             channels, width, rate, frames = (
@@ -94,20 +116,27 @@ def read_pcm_wav(wav_bytes: bytes) -> tuple[int, float]:
                 wav.getframerate(),
                 wav.getnframes(),
             )
+            pcm = wav.readframes(frames)
     except (wave.Error, EOFError) as exc:
         raise TakeRejected(f"Take upload is not a PCM WAV file: {exc}") from exc
-    if channels != 1 or width != 2:
-        raise TakeRejected(f"Take upload must be mono 16-bit PCM, got {channels} ch x {8 * width} bit")
+    if channels != 1 or width not in (2, 3):
+        raise TakeRejected(f"Take upload must be mono 16- or 24-bit PCM, got {channels} ch x {8 * width} bit")
     if not 8000 <= rate <= 192000 or frames == 0:
         raise TakeRejected(f"Take upload has an unusable sample rate {rate} or no samples")
     seconds = frames / rate
     if seconds > MAX_TAKE_SECONDS:
         raise TakeRejected(f"Take upload is {seconds:.0f} s, over the {MAX_TAKE_SECONDS:.0f} s limit")
-    return rate, seconds
+    effective_bits = 24 if width == 3 and any(pcm[0::3]) else 16
+    return PcmUpload(sample_rate=rate, seconds=seconds, bits=8 * width, effective_bits=effective_bits)
 
 
-def encode_flac_16k(wav_bytes: bytes, out_path: Path) -> None:
-    """Resample to 16 kHz mono FLAC, the program's storage form for PCM sources."""
+def encode_flac(wav_bytes: bytes, out_path: Path, sample_rate: int | None, bits: int = 16) -> None:
+    """Encode mono FLAC, resampled to `sample_rate` or at the upload's own rate when None.
+
+    `bits` is 16 or 24; samples are written at their recorded level, never normalized.
+    """
+    resample = ["-af", "aresample=resampler=soxr", "-ar", str(sample_rate)] if sample_rate else []
+    sample_format = ["-sample_fmt", "s16"] if bits == 16 else ["-sample_fmt", "s32", "-bits_per_raw_sample", "24"]
     subprocess.run(
         [
             "ffmpeg",
@@ -118,14 +147,10 @@ def encode_flac_16k(wav_bytes: bytes, out_path: Path) -> None:
             "wav",
             "-i",
             "pipe:0",
-            "-af",
-            "aresample=resampler=soxr",
-            "-ar",
-            str(STORED_SAMPLE_RATE),
+            *resample,
             "-ac",
             "1",
-            "-sample_fmt",
-            "s16",
+            *sample_format,
             "-f",
             "flac",
             str(out_path),
@@ -166,19 +191,25 @@ class TakeStore:
         owner: str | None = None,
     ) -> StoredTake:
         """Store one take; `owner` is the uploading browser's owner key, when it sent a token."""
-        rate, seconds = read_pcm_wav(wav_bytes)
+        upload = read_pcm_wav(wav_bytes)
+        rate, seconds = upload.sample_rate, upload.seconds
         speaker_dir = self.speaker_dir(request.id, speaker)
         line_dir = speaker_dir / line.id
         line_dir.mkdir(parents=True, exist_ok=True)
         take_id = new_take_id()
-        flac_tmp = line_dir / f"{take_id}.flac.tmp"
-        try:
-            encode_flac_16k(wav_bytes, flac_tmp)
-            flac_tmp.replace(line_dir / f"{take_id}.flac")
-        except subprocess.CalledProcessError as exc:
-            raise TakeRejected(f"Take FLAC encoding failed: {exc.stderr.decode(errors='replace')[:300]}") from exc
-        finally:
-            flac_tmp.unlink(missing_ok=True)
+        files = (
+            (f"{take_id}.flac", STORED_SAMPLE_RATE, 16),
+            (f"{take_id}{ORIGINAL_SUFFIX}", None, upload.effective_bits),
+        )
+        for name, sample_rate, bits in files:
+            flac_tmp = line_dir / f"{name}.tmp"
+            try:
+                encode_flac(wav_bytes, flac_tmp, sample_rate, bits)
+                flac_tmp.replace(line_dir / name)
+            except subprocess.CalledProcessError as exc:
+                raise TakeRejected(f"Take FLAC encoding failed: {exc.stderr.decode(errors='replace')[:300]}") from exc
+            finally:
+                flac_tmp.unlink(missing_ok=True)
         sidecar = {
             "take_id": take_id,
             "received_at": utc_now(),
@@ -189,7 +220,10 @@ class TakeStore:
             "line_text": line.text,
             "speaker": speaker,
             "source_sample_rate": rate,
+            "source_bits": upload.bits,
+            "source_effective_bits": upload.effective_bits,
             "stored_sample_rate": STORED_SAMPLE_RATE,
+            "original_file": f"{take_id}{ORIGINAL_SUFFIX}",
             "duration_s": round(seconds, 3),
             "user_agent": user_agent,
             "owner_key": owner,
@@ -207,8 +241,10 @@ class TakeStore:
                 f.write(json.dumps(entry) + "\n")
         return StoredTake(take_id=take_id, duration_s=seconds, source_sample_rate=rate)
 
-    def take_path(self, take: ListedTake) -> Path:
-        return self.speaker_dir(take.request_id, take.speaker) / take.line_id / f"{take.take_id}.flac"
+    def take_path(self, take: ListedTake, original: bool = False) -> Path:
+        """The take's 16 kHz FLAC, or with `original` its capture-rate FLAC when it has one."""
+        suffix = ORIGINAL_SUFFIX if original and take.has_original else ".flac"
+        return self.speaker_dir(take.request_id, take.speaker) / take.line_id / f"{take.take_id}{suffix}"
 
     def owned_takes(self, owner: str) -> list[ListedTake]:
         """The takes one browser uploaded, oldest first; a take whose files are gone is skipped."""
@@ -271,6 +307,8 @@ class TakeStore:
                     duration_s=sidecar["duration_s"],
                     received_at=sidecar["received_at"],
                     accepted=accepted_by_speaker[request_id, speaker].get(line_id, {}).get("take_id") == take_id,
+                    source_sample_rate=sidecar["source_sample_rate"],
+                    has_original=(speaker_dir / line_id / f"{take_id}{ORIGINAL_SUFFIX}").is_file(),
                 )
             )
         return takes

@@ -3,9 +3,13 @@
 
 const $ = (id) => document.getElementById(id);
 
-const zipLabel = (retried) => (retried ? "zip (all takes)" : "zip (kept)");
+/** Download choices from the page's checkboxes: retried takes too, and capture-rate files. */
+const choices = () => ({ retried: $("include-retried").checked, original: $("original-rate").checked });
+
+const zipLabel = ({ retried }) => (retried ? "zip (all takes)" : "zip (kept)");
 /** The zip route for a scope ("" for everything, "/<request>", "/<request>/<speaker>"). */
-const zipUrl = (scope, retried) => `/api/owner${scope}/${retried ? "takes" : "kept"}.zip`;
+const zipUrl = (scope, { retried, original }) =>
+  `/api/owner${scope}/${retried ? "takes" : "kept"}${original ? ".orig" : ""}.zip`;
 
 function downloadButton(text, url) {
   const button = document.createElement("button");
@@ -16,15 +20,17 @@ function downloadButton(text, url) {
   return button;
 }
 
-function takeRow(take) {
+function takeRow(take, { original }) {
+  const useOriginal = original && take.has_original;
   const row = document.createElement("li");
   const link = document.createElement("a");
-  link.href = take.url;
-  link.download = take.file_name;
-  link.textContent = take.file_name;
+  link.href = useOriginal ? take.url.replace(/\.flac$/, ".orig.flac") : take.url;
+  link.download = useOriginal ? take.file_name.replace(/\.flac$/, ".orig.flac") : take.file_name;
+  link.textContent = link.download;
   const detail = document.createElement("span");
   detail.className = "take-detail";
-  detail.textContent = ` ${take.duration_s.toFixed(1)} s${take.accepted ? " · kept" : ""} · ${take.line_text}`;
+  const rate = useOriginal ? take.source_sample_rate : 16000;
+  detail.textContent = ` ${take.duration_s.toFixed(1)} s · ${rate / 1000} kHz${take.accepted ? " · kept" : ""} · ${take.line_text}`;
   row.append(link, detail);
   return row;
 }
@@ -39,33 +45,31 @@ function groupBy(items, key) {
   return groups;
 }
 
-function heading(level, text, scope, retried) {
-  const h = document.createElement(level);
-  h.append(`${text} `, downloadButton(zipLabel(retried()), () => zipUrl(scope, retried())));
-  return h;
-}
-
-function renderGroups(takes, retried) {
+function renderGroups(takes) {
+  const chosen = choices();
   const requests = [...groupBy(takes, (t) => t.request_id)].map(([requestId, requestTakes]) => {
     const section = document.createElement("section");
-    section.append(heading("h2", requestId, `/${requestId}`, retried));
+    const heading = document.createElement("h2");
+    heading.append(`${requestId} `, downloadButton(zipLabel(chosen), () => zipUrl(`/${requestId}`, choices())));
+    section.append(heading);
     for (const [speaker, speakerTakes] of groupBy(requestTakes, (t) => t.speaker)) {
       const details = document.createElement("details");
       const summary = document.createElement("summary");
       const kept = speakerTakes.filter((t) => t.accepted).length;
-      const zip = downloadButton(zipLabel(retried()), () => zipUrl(`/${requestId}/${speaker}`, retried()));
+      const zip = downloadButton(zipLabel(chosen), () => zipUrl(`/${requestId}/${speaker}`, choices()));
       // A click on a control inside <summary> would also toggle the list.
       zip.addEventListener("click", (event) => event.preventDefault());
       summary.append(`${speaker}: ${kept} kept, ${speakerTakes.length} takes `, zip);
       const list = document.createElement("ul");
       list.className = "take-list";
-      list.append(...speakerTakes.map(takeRow));
+      list.append(...speakerTakes.map((take) => takeRow(take, chosen)));
       details.append(summary, list);
       section.append(details);
     }
     return section;
   });
   $("groups").replaceChildren(...requests);
+  $("zip-all").textContent = chosen.retried ? "Download all takes (.zip)" : "Download kept takes (.zip)";
 }
 
 async function showLogin() {
@@ -99,15 +103,10 @@ async function main() {
     $("status").textContent = "No recordings yet.";
     return;
   }
-  const includeRetried = $("include-retried");
-  const retried = () => includeRetried.checked;
-  renderGroups(takes, retried);
+  renderGroups(takes);
   $("download-zip").hidden = false;
-  includeRetried.addEventListener("change", () => {
-    $("zip-all").textContent = retried() ? "Download all takes (.zip)" : "Download kept takes (.zip)";
-    renderGroups(takes, retried);
-  });
-  $("zip-all").addEventListener("click", () => location.assign(zipUrl("", retried())));
+  for (const box of [$("include-retried"), $("original-rate")]) box.addEventListener("change", () => renderGroups(takes));
+  $("zip-all").addEventListener("click", () => location.assign(zipUrl("", choices())));
 }
 
 main();

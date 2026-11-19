@@ -22,8 +22,8 @@ Routes:
     GET  /owner                         every stored take, after an owner password login
     POST /api/owner/login               body: {"user", "password"}; sets the owner session cookie
     GET  /api/owner/takes               list of every take
-    GET  /api/owner/takes/<request>/<speaker>/<line>/<take>.flac
-    GET  /api/owner[/<request>[/<speaker>]]/{kept,takes}.zip
+    GET  /api/owner/takes/<request>/<speaker>/<line>/<take>[.orig].flac   .orig: at the capture rate
+    GET  /api/owner[/<request>[/<speaker>]]/{kept,takes}[.orig].zip
 
 Header X-Read-Me-Owner carries the browser's owner token: optional on take uploads, required on /api/mine.
 """
@@ -49,7 +49,7 @@ from urllib.parse import unquote, urlsplit
 
 from owner_access import COOKIE_MAX_AGE_S, COOKIE_NAME, OwnerAccounts
 from reading_requests import SAFE_ID_PATTERN, ReadingRequestCatalog, ReadingRequestError, is_safe_id
-from take_store import ListedTake, TakeRejected, TakeStore, owner_key
+from take_store import STORED_SAMPLE_RATE, ListedTake, TakeRejected, TakeStore, owner_key
 
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
@@ -79,8 +79,9 @@ ROUTE_PROGRESS = re.compile(SPEAKER_API + r"/progress$")
 ROUTE_TAKES = re.compile(SPEAKER_API + rf"/lines/{ID}/takes$")
 ROUTE_ACCEPT = re.compile(SPEAKER_API + rf"/lines/{ID}/accept$")
 ROUTE_MINE_TAKE = re.compile(rf"^/api/mine/takes/{ID}/{ID}/{ID}/{ID}\.flac$")
-ROUTE_OWNER_TAKE = re.compile(rf"^/api/owner/takes/{ID}/{ID}/{ID}/{ID}\.flac$")
-ROUTE_OWNER_ZIP = re.compile(rf"^/api/owner(?:/{ID}(?:/{ID})?)?/(kept|takes)\.zip$")
+# Take ids hold no dot, so `.orig` (the capture-rate file) cannot be read as part of one.
+ROUTE_OWNER_TAKE = re.compile(rf"^/api/owner/takes/{ID}/{ID}/{ID}/([A-Za-z0-9_-]+)(\.orig)?\.flac$")
+ROUTE_OWNER_ZIP = re.compile(rf"^/api/owner(?:/{ID}(?:/{ID})?)?/(kept|takes)(\.orig)?\.zip$")
 OWNER_HEADER = "X-Read-Me-Owner"
 OWNER_TOKEN = re.compile(r"^[0-9a-f]{32,128}$")
 
@@ -186,7 +187,7 @@ class ReadMeHandler(BaseHTTPRequestHandler):
         if path == "/api/owner/takes":
             return self.send_json(200, {"takes": [listed_take_json(take, "/api/owner/takes") for take in takes]})
         if m := ROUTE_OWNER_ZIP.match(path):
-            request_id, speaker, which = m.groups()
+            request_id, speaker, which, orig = m.groups()
             chosen = [
                 take
                 for take in takes
@@ -194,13 +195,16 @@ class ReadMeHandler(BaseHTTPRequestHandler):
                 and speaker in (None, take.speaker)
                 and (which == "takes" or take.accepted)
             ]
-            name = "-".join(["read-me", *filter(None, [request_id, speaker]), which]) + ".zip"
-            return self.send_body(200, takes_zip(self.store, chosen), "application/zip", name)
+            name = "-".join(["read-me", *filter(None, [request_id, speaker, which, orig and "orig"])]) + ".zip"
+            return self.send_body(200, takes_zip(self.store, chosen, original=bool(orig)), "application/zip", name)
         if m := ROUTE_OWNER_TAKE.match(path):
-            take = next((t for t in takes if (t.request_id, t.speaker, t.line_id, t.take_id) == m.groups()), None)
-            if take is None:
+            *ref, orig = m.groups()
+            take = next((t for t in takes if [t.request_id, t.speaker, t.line_id, t.take_id] == ref), None)
+            if take is None or (orig and not take.has_original):
                 return self.send_error_json(404, "No such take")
-            return self.send_body(200, self.store.take_path(take).read_bytes(), "audio/flac", take.file_name)
+            original = bool(orig)
+            body = self.store.take_path(take, original).read_bytes()
+            return self.send_body(200, body, "audio/flac", take.download_name(original))
         self.send_error_json(404, "Not found")
 
     def post_owner_login(self) -> None:
@@ -352,14 +356,19 @@ def listed_take_json(take: ListedTake, takes_url: str) -> dict:
     return doc
 
 
-def takes_zip(store: TakeStore, takes: list[ListedTake]) -> bytes:
-    """A zip of the takes, one folder per speaker code, plus a takes.tsv manifest of line texts."""
-    manifest = ["file\trequest\tspeaker\tline\ttake_id\tkept\tduration_s\tline_text"]
+def takes_zip(store: TakeStore, takes: list[ListedTake], original: bool = False) -> bytes:
+    """A zip of the takes, one folder per speaker code, plus a takes.tsv manifest of line texts.
+
+    With `original`, each take is its capture-rate file where it has one, else its 16 kHz file;
+    the manifest's sample_rate column says which.
+    """
+    manifest = ["file\trequest\tspeaker\tline\ttake_id\tkept\tduration_s\tsample_rate\tline_text"]
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_STORED) as archive:
         for take in takes:
-            name = f"{take.speaker}/{take.file_name}"
-            archive.write(store.take_path(take), name)
+            name = f"{take.speaker}/{take.download_name(original)}"
+            archive.write(store.take_path(take, original), name)
+            rate = take.source_sample_rate if original and take.has_original else STORED_SAMPLE_RATE
             manifest.append(
                 "\t".join(
                     [
@@ -370,6 +379,7 @@ def takes_zip(store: TakeStore, takes: list[ListedTake]) -> bytes:
                         take.take_id,
                         "yes" if take.accepted else "no",
                         f"{take.duration_s:.3f}",
+                        str(rate),
                         take.line_text,
                     ]
                 )
