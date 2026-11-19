@@ -21,7 +21,7 @@ import pytest
 
 import read_me_server
 from reading_requests import ReadingRequestCatalog, ReadingRequestError, parse_reading_request
-from take_store import TakeStore
+from take_store import TakeStore, owner_key
 
 REPO = Path(__file__).resolve().parents[1]
 
@@ -111,7 +111,7 @@ def fetch_bytes(url: str, headers: dict) -> tuple[int, bytes]:
 
 
 def test_a_browser_downloads_only_its_own_takes(server):
-    base, _ = server
+    base, data_root = server
     mine, other = {"X-Read-Me-Owner": "ab" * 24}, {"X-Read-Me-Owner": "cd" * 24}
     upload = {"Content-Type": "audio/wav"}
     api = f"{base}/api/requests/demo-en/speakers/tester/lines"
@@ -138,6 +138,10 @@ def test_a_browser_downloads_only_its_own_takes(server):
         manifest = z.read("takes.tsv").decode().splitlines()
     assert names == ["takes.tsv", "tester/demo-en.0001.01.flac", "tester/demo-en.0001.02.flac"]
     assert manifest[2].split("\t")[5] == "yes"
+
+    with (data_root / "owners" / f"{owner_key('ab' * 24)}.jsonl").open("a", encoding="utf-8") as f:
+        f.write('{"request_id": "demo-en", "spea')
+    assert len(call(f"{base}/api/mine", headers=mine)[1]["takes"]) == 2
 
     assert call(f"{base}/api/mine")[0] == 401
     assert call(f"{base}/api/mine", headers={"X-Read-Me-Owner": "not-hex"})[0] == 400

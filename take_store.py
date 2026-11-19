@@ -23,6 +23,7 @@ import io
 import json
 import secrets
 import subprocess
+import sys
 import threading
 import time
 import wave
@@ -214,7 +215,12 @@ class TakeStore:
         numbers: dict[tuple[str, str, str], int] = {}
         takes = []
         for raw in index.read_text(encoding="utf-8").splitlines():
-            entry = json.loads(raw)
+            try:
+                entry = json.loads(raw)
+            except json.JSONDecodeError:
+                # An append interrupted mid-line; like a take without a sidecar, it is skipped.
+                print(f"[store] Skipping unreadable owner index line in {index.name}", file=sys.stderr)
+                continue
             request_id, speaker, line_id, take_id = (entry[k] for k in ("request_id", "speaker", "line_id", "take_id"))
             speaker_dir = self.speaker_dir(request_id, speaker)
             sidecar_path = speaker_dir / line_id / f"{take_id}.json"

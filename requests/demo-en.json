@@ -1,7 +1,7 @@
 {
   "title": "Demo: five English lines",
   "language": "en",
-  "instructions": "Read each line the way you would naturally say it. Leave a short pause before and after.",
+  "instructions": "Read each line the way you would naturally say it.",
   "asr_check": {"metric": "ERn", "min_accuracy": 0.2},
   "lines": [
     {"id": "0001", "text": "The bus to the airport leaves every twenty minutes after six."},

@@ -3,8 +3,8 @@
 Record speech for speech-recognition training and evaluation from a phone
 browser. A speaker opens a link, reads a prerequested list of lines one at a
 time, and gets immediate feedback on each recording: levels, clipping, a
-noise gate, and band-limiting from a Bluetooth or voice-codec path. No app install: the page runs in a current
-Chrome on Android or desktop.
+noise gate, and band-limiting from a Bluetooth or voice-codec path. No app
+install: the page runs in a current Chrome on Android or desktop.
 
 Every take is kept on the server, including the ones the speaker retried.
 For each line, the take the speaker kept (normally the last plausible one) is
