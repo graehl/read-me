@@ -51,9 +51,10 @@ STATIC_TYPES = {
     ".css": "text/css; charset=utf-8",
     ".svg": "image/svg+xml",
 }
+# No frame-ancestors: a host such as YA's App pane may frame any page here, by design.
 SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; media-src 'self' blob:; img-src 'self' data:; "
-    "object-src 'none'; base-uri 'none'; frame-ancestors 'self'",
+    "object-src 'none'; base-uri 'none'",
     "Permissions-Policy": "microphone=(self)",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",

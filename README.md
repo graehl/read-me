@@ -31,9 +31,10 @@ As a [yepanywhere](https://github.com/graehl/yepanywhere) project app,
 `.project-template/app.json` starts the server in YA's project sandbox on the
 port YA passes as `PORT`. The sandbox can write only inside the project, so
 takes go to the Git-ignored `data/` directory there; YA's reserved address
-supplies HTTPS and the private-link access check. Open the address directly
-in its own tab: the recorder sets `frame-ancestors 'self'` and
-`microphone=(self)`, so it does not record inside YA's framed App view.
+supplies HTTPS and the private-link access check. Every page may be framed,
+so the request list and `/mine` work in YA's App pane. Recording there needs
+the frame to be granted the microphone; until YA's pane grants it, the
+recorder says so and links to the same page in its own tab.
 
 ## Reading requests
 

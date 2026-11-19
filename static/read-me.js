@@ -47,8 +47,17 @@ const currentLine = () => app.request.lines[app.lineIndex];
 const lineState = (line) => app.lines.get(line.id);
 const latestTake = (line) => lineState(line).takes.at(-1) ?? null;
 
-function showFatal(message) {
+/** Show a blocking problem; with `openUrl`, add a link that opens it in a new tab. */
+function showFatal(message, openUrl = null) {
   $("fatal").textContent = message;
+  if (openUrl) {
+    const link = document.createElement("a");
+    link.href = openUrl;
+    link.target = "_blank";
+    link.rel = "noopener";
+    link.textContent = openUrl;
+    $("fatal").append(" ", link);
+  }
   $("fatal").hidden = false;
 }
 
@@ -423,7 +432,11 @@ async function startSession(speaker) {
     await openMicrophone(localStorage.getItem("read-me.mic"));
   } catch (error) {
     const denied = error.name === "NotAllowedError";
-    showFatal(denied ? "Microphone access was refused. Allow it in the browser's site settings, then reload." : `Microphone unavailable: ${error.message}`);
+    if (denied && window.self !== window.top) {
+      showFatal("This view cannot use the microphone. Open the recorder in its own tab:", location.href);
+    } else {
+      showFatal(denied ? "Microphone access was refused. Allow it in the browser's site settings, then reload." : `Microphone unavailable: ${error.message}`);
+    }
     return false;
   }
   $("fatal").hidden = true;
