@@ -1,16 +1,18 @@
 // Take checks: recording-quality analysis of one take, run in the browser right after Stop.
 // Pure functions over Float32 samples so they also run under Node for tests.
+//
+// The speech span found here is an estimate. It sets metrics and the waveform shading, and
+// decides whether to keep recording briefly after Stop, but never produces a verdict that the
+// speaker started or stopped too soon.
 
 const FRAME_SECONDS = 0.01;
 const MIN_SPEECH_RUN_FRAMES = 6; // shorter bursts are taps and clicks, not speech
 const SPEECH_GAP_FRAMES = 10; // bridge pauses shorter than this inside one speech run
 const CLIP_LEVEL = 0.999;
+/** Trailing span inspected after Stop: speech-level energy in it means the speaker may not be done. */
+export const TAIL_CHECK_SECONDS = 0.3;
 
 export const TAKE_CHECK_LIMITS = {
-  minLeadSeconds: 0.3,
-  failLeadSeconds: 0.15,
-  minTrailSeconds: 0.3,
-  failTrailSeconds: 0.15,
   quietPeakDb: -30,
   hotPeakDb: -1,
   gatedFloorDb: -90,
@@ -118,8 +120,26 @@ function highBandRatioDb(samples, sampleRate, runs, frameLen) {
   return 10 * Math.log10((band(5000, 7500) + 1e-20) / (band(300, 3400) + 1e-20));
 }
 
+/** Speech-level threshold for a take: well above its quiet floor, within 35 dB of its loudest frame. */
+function speechThresholdDb(levels) {
+  const floorDb = percentile(levels, 0.1);
+  const loudestFrameDb = levels.length ? Math.max(...levels) : -120;
+  return { floorDb, thresholdDb: Math.max(floorDb + 12, loudestFrameDb - 35) };
+}
+
 /**
- * Analyze one take: levels, clipping, leading and trailing silence, noise gate, bandwidth.
+ * Given the take so far at Stop, a test of whether a trailing span still holds speech-level
+ * energy, by the take's own threshold. A take with no speech yet never extends.
+ */
+export function tailSpeechCheck(samplesSoFar, sampleRate) {
+  const levels = frameLevelsDb(samplesSoFar, sampleRate);
+  const { thresholdDb } = speechThresholdDb(levels);
+  if (findSpeechRuns(levels, thresholdDb).length === 0) return () => false;
+  return (tail) => frameLevelsDb(tail, sampleRate).some((level) => level >= thresholdDb);
+}
+
+/**
+ * Analyze one take: levels, clipping, speech span estimate, noise gate, bandwidth.
  * Returns {metrics, findings}; each finding is {id, level: "fail"|"warn"|"ok", message}.
  */
 export function analyzeTake(samples, sampleRate, limits = TAKE_CHECK_LIMITS) {
@@ -134,9 +154,7 @@ export function analyzeTake(samples, sampleRate, limits = TAKE_CHECK_LIMITS) {
     if (a >= CLIP_LEVEL) clipped++;
   }
   const peakDb = toDb(peak);
-  const floorDb = percentile(levels, 0.1);
-  const loudestFrameDb = levels.length ? Math.max(...levels) : -120;
-  const thresholdDb = Math.max(floorDb + 12, loudestFrameDb - 35);
+  const { floorDb, thresholdDb } = speechThresholdDb(levels);
   const runs = findSpeechRuns(levels, thresholdDb);
   const speechFrames = runs.reduce((n, [a, b]) => n + b - a, 0);
   const speechStart = runs.length ? runs[0][0] * FRAME_SECONDS : null;
@@ -169,11 +187,6 @@ export function analyzeTake(samples, sampleRate, limits = TAKE_CHECK_LIMITS) {
   else if (clipped > 0) add("clipping", "warn", "Slight clipping on the loudest part.");
   else if (peakDb > limits.hotPeakDb) add("hot", "warn", "Very close to clipping.");
   if (peakDb < limits.quietPeakDb) add("too-quiet", "warn", "Quite quiet. Move a little closer to the microphone.");
-
-  if (metrics.lead_silence_s < limits.failLeadSeconds) add("lead-silence", "fail", "Speech started too soon. Wait a moment after tapping Record.");
-  else if (metrics.lead_silence_s < limits.minLeadSeconds) add("lead-silence", "warn", "Short pause before speaking; leave half a second.");
-  if (metrics.trail_silence_s < limits.failTrailSeconds) add("trail-silence", "fail", "Stopped too soon: the end may be cut off. Wait a moment before tapping Stop.");
-  else if (metrics.trail_silence_s < limits.minTrailSeconds) add("trail-silence", "warn", "Short pause after speaking; leave half a second.");
 
   if (floorDb < limits.gatedFloorDb) add("gated", "warn", "The pauses are digitally silent: noise suppression may be on.");
   if (metrics.high_band_ratio_db !== null && metrics.high_band_ratio_db < limits.bandLimitedRatioDb) {

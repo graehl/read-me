@@ -73,10 +73,17 @@ export class LiveWaveform {
 
   reset() {
     this.peaks = [];
+    this.frozen = false;
     clearWaveform(this.canvas);
   }
 
+  /** Stop drawing, including a frame already scheduled, so a finished take can own the canvas. */
+  freeze() {
+    this.frozen = true;
+  }
+
   push(block, sampleRate) {
+    if (this.frozen) return;
     let lo = 0;
     let hi = 0;
     for (const s of block) {
@@ -95,6 +102,7 @@ export class LiveWaveform {
 
   draw() {
     this.pending = false;
+    if (this.frozen) return;
     const { ctx, width, height } = sizeCanvas(this.canvas);
     ctx.clearRect(0, 0, width, height);
     const step = width / (this.keep || 1);

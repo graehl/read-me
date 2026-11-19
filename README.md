@@ -2,9 +2,8 @@
 
 Record speech for speech-recognition training and evaluation from a phone
 browser. A speaker opens a link, reads a prerequested list of lines one at a
-time, and gets immediate feedback on each recording: levels, clipping, the
-pauses before and after speech, a noise gate, and band-limiting from a
-Bluetooth or voice-codec path. No app install: the page runs in a current
+time, and gets immediate feedback on each recording: levels, clipping, a
+noise gate, and band-limiting from a Bluetooth or voice-codec path. No app install: the page runs in a current
 Chrome on Android or desktop.
 
 Every take is kept on the server, including the ones the speaker retried.
@@ -90,6 +89,12 @@ the browser actually applied (`track.getSettings()`):
 - **Native sample rate.** No browser resampling; the server resamples.
 - **The microphone counts as open only once samples arrive**, with a 3.5 s
   watchdog, so a suspended audio context cannot record silent takes.
+- **Margins around speech are the page's job.** The microphone stays open
+  between takes and each take starts with the half second before Record.
+  When speech still seems under way at Stop, recording continues quietly
+  until a 0.3 s quiet tail or one more second. The detected speech span is
+  an estimate: it shades the waveform and is stored with the take, but never
+  produces a "started or stopped too soon" verdict.
 
 Several of these were learned in the dictation capture of
 [yepanywhere](https://github.com/graehl/yepanywhere)
@@ -102,8 +107,10 @@ lower, and the warning fires below −40 dB.
 
 ## Recording flow
 
-Record → speak → Stop. The take's waveform appears with the detected speech
-span shaded, together with the check results. **Next** keeps the take and
+Record → speak → Stop. While recording, the waveform has a red frame and a
+REC mark. The take's waveform then appears with the estimated speech span
+shaded, together with the check results; Retry, Record and Next sit directly
+under it. **Next** keeps the take and
 moves on; **Retry** records the line again. Uploading and keeping run in the
 background, so moving on never waits; the numbered chips at the top show each
 line's state as results arrive (✓ kept, ! kept with a warning, ✕ kept despite

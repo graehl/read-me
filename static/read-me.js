@@ -15,10 +15,11 @@ import {
 } from "./line-progress.js";
 import { MicCapture, encodeWav16, listAudioInputs, voiceProcessingLeftOn } from "./mic-capture.js";
 import { OWNER_HEADER, ownerToken } from "./owner-token.js";
-import { analyzeTake, worstLevel } from "./take-checks.js";
+import { TAIL_CHECK_SECONDS, analyzeTake, tailSpeechCheck, worstLevel } from "./take-checks.js";
 import { LiveWaveform, clearWaveform, drawTake } from "./waveform.js";
 
-const MAX_TAKE_SECONDS = 85; // under the server's 90 s limit
+const MAX_TAKE_SECONDS = 85; // with pre-roll and stop extension, under the server's 90 s limit
+const STOP_EXTENSION_SECONDS = 1;
 const UPLOAD_RETRY_DELAYS_MS = [2000, 5000, 10000];
 const $ = (id) => document.getElementById(id);
 // The speaker field's pattern attribute is the page's one copy of the server's path-safe id rule.
@@ -160,9 +161,15 @@ async function stopRecording() {
   if (app.mode !== "recording") return;
   app.mode = "stopping";
   clearTimeout(app.autoStopTimer);
+  render();
   let samples;
   try {
-    samples = await app.mic.stop();
+    // Speech still under way at Stop keeps recording quietly for up to a second.
+    samples = await app.mic.stop({
+      extendUpTo: STOP_EXTENSION_SECONDS,
+      tailSeconds: TAIL_CHECK_SECONDS,
+      makeTailCheck: tailSpeechCheck,
+    });
   } catch (error) {
     app.mode = "idle";
     render();
@@ -285,11 +292,11 @@ function renderFindings(take, line) {
   const box = $("findings");
   const state = lineState(line);
   if (app.mode === "recording" || app.mode === "stopping") {
-    box.replaceChildren(textItem("Recording… tap Stop after a short pause.", "info"));
+    box.replaceChildren(app.mode === "recording" ? textItem("Recording… tap Stop when you finish.", "info") : "");
     return;
   }
   if (!take) {
-    const message = state.keptTakeId ? "Recorded earlier. Record again to replace it." : "Tap Record, pause, read the line, pause, tap Stop.";
+    const message = state.keptTakeId ? "Recorded earlier. Record again to replace it." : "Tap Record, read the line, tap Stop.";
     const items = [textItem(message, "info")];
     const leftOn = voiceProcessingLeftOn(app.captureSettings);
     if (leftOn.length) items.push(textItem(`This browser kept ${leftOn.join(", ")} on; recordings may be processed.`, "warn"));
@@ -321,16 +328,19 @@ function render() {
   const take = app.mode === "review" ? latestTake(line) : null;
   $("line-label").textContent = `Line ${app.lineIndex + 1} of ${app.request.lines.length}`;
   $("line-text").textContent = line.text;
-  if (take) drawTake($("waveform"), take.samples, take.sampleRate, take.analysis.metrics);
-  else if (app.mode === "idle") app.live.reset();
+  if (take) {
+    app.live.freeze();
+    drawTake($("waveform"), take.samples, take.sampleRate, take.analysis.metrics);
+  } else if (app.mode === "idle") app.live.reset();
   $("player").src = take ? take.url : "";
   $("play").disabled = !take;
   const record = $("record");
-  const capturing = app.mode === "recording" || app.mode === "stopping";
-  record.textContent = capturing ? "Stop" : "Record";
+  const armed = app.mode === "recording";
+  record.textContent = armed ? "Stop" : "Record";
   record.disabled = app.mode === "stopping";
-  record.classList.toggle("recording", capturing);
-  $("mic-select").disabled = capturing;
+  record.classList.toggle("recording", armed);
+  $("take").classList.toggle("armed", armed);
+  $("mic-select").disabled = armed || app.mode === "stopping";
   $("retry").disabled = app.mode !== "review";
   const canKeep = app.mode === "review" && take && take.level !== "fail";
   const canSkipAhead = app.mode === "idle" && isAccepted(line);

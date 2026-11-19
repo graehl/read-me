@@ -1,9 +1,9 @@
-// Take checks on synthetic takes: padded speech-like noise passes; cut-off, clipped,
-// gated and band-limited takes are flagged.  Run: node --test tests/
+// Take checks on synthetic takes: padded speech-like noise passes; clipped, gated and
+// band-limited takes are flagged; speech span estimates never become verdicts.  Run: node --test tests/
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { analyzeTake, worstLevel } from "../static/take-checks.js";
+import { analyzeTake, tailSpeechCheck, worstLevel } from "../static/take-checks.js";
 
 const RATE = 48000;
 
@@ -37,12 +37,18 @@ test("a padded, moderate take passes", () => {
   assert.ok(Math.abs(result.metrics.trail_silence_s - 0.5) < 0.05);
 });
 
-test("stopping right after speech fails the trailing-silence check", () => {
-  assert.ok(ids(analyzeTake(take({ trail: 0.05 }), RATE)).includes("trail-silence:fail"));
+test("speech running to either edge of the take is not judged", () => {
+  assert.deepEqual(ids(analyzeTake(take({ lead: 0.02, trail: 0.02 }), RATE)), ["ok:ok"]);
 });
 
-test("a short trailing pause warns", () => {
-  assert.ok(ids(analyzeTake(take({ trail: 0.22 }), RATE)).includes("trail-silence:warn"));
+test("speech at Stop asks for more recording; a quiet tail does not", () => {
+  const cutOff = take({ trail: 0.02 });
+  const stillSpeaking = tailSpeechCheck(cutOff, RATE);
+  assert.ok(stillSpeaking(cutOff.subarray(cutOff.length - 0.3 * RATE)));
+  const padded = take({});
+  assert.ok(!tailSpeechCheck(padded, RATE)(padded.subarray(padded.length - 0.3 * RATE)));
+  const silent = take({ amp: 0 });
+  assert.ok(!tailSpeechCheck(silent, RATE)(silent.subarray(silent.length - 0.3 * RATE)));
 });
 
 test("clipping fails", () => {

@@ -10,9 +10,12 @@
 //   better than one channel of a stereo stream).
 // - Native sample rate: the browser's resampler is not used; the server resamples to 16 kHz.
 // - The microphone counts as open only once real samples arrive.
+// - The microphone stays open between takes, and a take starts with the half second heard before
+//   Record, so speech begun at the tap is not cut off.
 
 const FIRST_SAMPLES_TIMEOUT_MS = 3500;
 const FLUSH_TIMEOUT_MS = 2000;
+const PREROLL_SECONDS = 0.5;
 
 function rawAudioConstraints(deviceId) {
   return {
@@ -37,6 +40,8 @@ export class MicCapture {
     this.onBlock = onBlock;
     this.recording = false;
     this.blocks = [];
+    this.preroll = [];
+    this.onRecordedBlock = null;
     this.flushes = new Map();
     this.nextFlushId = 1;
   }
@@ -76,7 +81,12 @@ export class MicCapture {
     if (message.type === "block") {
       this.onFirstSamples?.();
       this.onFirstSamples = null;
-      if (this.recording) this.blocks.push(message.samples);
+      if (this.recording) {
+        this.blocks.push(message.samples);
+        this.onRecordedBlock?.(message.samples);
+      } else {
+        this.keepPreroll(message.samples);
+      }
       this.onBlock(message.samples);
     } else if (message.type === "flushed") {
       const resolve = this.flushes.get(message.id);
@@ -104,16 +114,27 @@ export class MicCapture {
     };
   }
 
+  keepPreroll(block) {
+    this.preroll.push(block);
+    const keep = PREROLL_SECONDS * this.sampleRate;
+    let total = this.preroll.reduce((n, b) => n + b.length, 0);
+    while (this.preroll.length > 1 && total - this.preroll[0].length >= keep) total -= this.preroll.shift().length;
+  }
+
   start() {
-    this.blocks = [];
+    this.blocks = this.preroll;
+    this.preroll = [];
     this.recording = true;
   }
 
   /**
    * Stop recording; resolves with the take's samples once the worklet's partial block arrives.
+   * With `extendUpTo`, recording first continues while the last `tailSeconds` still hold speech by
+   * `makeTailCheck(samplesSoFar, sampleRate)`, for at most `extendUpTo` seconds.
    * Rejects when the worklet does not answer (a suspended or interrupted audio context).
    */
-  async stop() {
+  async stop({ extendUpTo = 0, tailSeconds = 0.3, makeTailCheck = null } = {}) {
+    if (extendUpTo > 0 && makeTailCheck) await this.extendWhileSpeaking(extendUpTo, tailSeconds, makeTailCheck);
     const id = this.nextFlushId++;
     let timer;
     try {
@@ -130,6 +151,40 @@ export class MicCapture {
       this.blocks = [];
     }
   }
+
+  async extendWhileSpeaking(maxSeconds, tailSeconds, makeTailCheck) {
+    const rate = this.sampleRate;
+    const stillSpeaking = makeTailCheck(concatBlocks(this.blocks), rate);
+    const tail = () => recentSamples(this.blocks, Math.round(tailSeconds * rate));
+    if (!stillSpeaking(tail())) return;
+    const limit = maxSeconds * rate;
+    let extra = 0;
+    await new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(watchdog);
+        this.onRecordedBlock = null;
+        resolve();
+      };
+      // Blocks stop arriving if the audio context stalls; stop() then reports it.
+      const watchdog = setTimeout(done, maxSeconds * 1000 + 500);
+      this.onRecordedBlock = (block) => {
+        extra += block.length;
+        if (extra >= limit || !stillSpeaking(tail())) done();
+      };
+    });
+  }
+}
+
+/** The last `count` samples across blocks (fewer when the blocks hold fewer). */
+function recentSamples(blocks, count) {
+  const recent = [];
+  let total = 0;
+  for (let i = blocks.length - 1; i >= 0 && total < count; i--) {
+    recent.unshift(blocks[i]);
+    total += blocks[i].length;
+  }
+  const joined = concatBlocks(recent);
+  return joined.subarray(Math.max(0, joined.length - count));
 }
 
 function concatBlocks(blocks) {

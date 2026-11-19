@@ -20,7 +20,7 @@
     <ul class="tips">
       <li>Use a quiet room. Hold the phone a hand's width to a forearm from your mouth.</li>
       <li>Use the phone's own microphone or a wired one, not Bluetooth.</li>
-      <li>For each line: tap <b>Record</b>, wait a moment, read, wait a moment, tap <b>Stop</b>.</li>
+      <li>For each line: tap <b>Record</b>, read the line, tap <b>Stop</b>.</li>
     </ul>
     <p id="request-instructions" class="instructions"></p>
     <form id="setup-form">
@@ -40,18 +40,22 @@
       <p class="line-text" id="line-text" lang=""></p>
     </article>
 
-    <div class="take">
+    <div class="take" id="take">
       <button id="play" type="button" class="icon" aria-label="Play take" disabled>▶</button>
-      <canvas id="waveform" class="waveform" aria-label="Waveform of the current take" role="img"></canvas>
+      <div class="wave-frame">
+        <canvas id="waveform" class="waveform" aria-label="Waveform of the current take" role="img"></canvas>
+        <span class="rec-badge" aria-hidden="true">● REC</span>
+      </div>
     </div>
-
-    <div id="findings" class="findings" aria-live="polite"></div>
 
     <div class="controls">
       <button id="retry" type="button" disabled>Retry</button>
       <button id="record" type="button" class="record" aria-keyshortcuts="Space">Record</button>
       <button id="next" type="button" class="primary" aria-keyshortcuts="Enter" disabled>Next</button>
     </div>
+
+    <div id="findings" class="findings" aria-live="polite"></div>
+
     <p class="keys">Keys: Space record/stop · Enter next · R retry · ← → move</p>
     <label id="mic-picker" class="mic-picker" hidden>Microphone
       <select id="mic-select"></select>
