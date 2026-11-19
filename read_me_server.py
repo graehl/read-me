@@ -122,6 +122,8 @@ class ReadMeHandler(BaseHTTPRequestHandler):
         except ReadingRequestError as exc:
             self.log_message("%s", exc)
             self.send_error_json(500, str(exc))
+        except ConnectionError as exc:
+            self.log_message("Client went away during %s %s: %s", self.command, self.path, exc)
         except Exception:  # noqa: BLE001 - the request boundary answers 500 rather than dropping the connection
             self.log_message("Unhandled error on %s %s:\n%s", self.command, self.path, traceback.format_exc())
             self.send_error_json(500, "Internal server error")
