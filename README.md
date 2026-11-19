@@ -28,6 +28,14 @@ Open `http://localhost:3470/` for the list of reading requests, or
 access control of its own; put it behind one (a private link proxy, a tunnel
 with access rules) before sharing it.
 
+As a [yepanywhere](https://github.com/graehl/yepanywhere) project app,
+`.project-template/app.json` starts the server in YA's project sandbox on the
+port YA passes as `PORT`. The sandbox can write only inside the project, so
+takes go to the Git-ignored `data/` directory there; YA's reserved address
+supplies HTTPS and the private-link access check. Open the address directly
+in its own tab: the recorder sets `frame-ancestors 'self'` and
+`microphone=(self)`, so it does not record inside YA's framed App view.
+
 ## Reading requests
 
 One JSON file per request in `requests/` (or `--requests DIR`):

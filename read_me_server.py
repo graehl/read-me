@@ -20,6 +20,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import os
 import re
 import shutil
 import sys
@@ -219,8 +220,10 @@ class ReadMeHandler(BaseHTTPRequestHandler):
 def main() -> None:
     parser = argparse.ArgumentParser(description="Serve reading requests and store recorded takes.")
     parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=3470)
-    parser.add_argument("--data", type=Path, required=True, help="data root for takes, outside the repository")
+    parser.add_argument(
+        "--port", type=int, default=int(os.environ.get("PORT", "3470")), help="listen port (default: $PORT, else 3470)"
+    )
+    parser.add_argument("--data", type=Path, required=True, help="data root for takes; never committed")
     parser.add_argument(
         "--requests", type=Path, default=REPO_DIR / "requests", help="directory of <id>.json reading requests"
     )

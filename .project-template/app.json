@@ -1,0 +1,10 @@
+{
+  "service": {
+    "version": 1,
+    "where": { "kind": "process", "cwd": ".", "entry": "/" },
+    "start": { "argv": ["/usr/bin/python3", "read_me_server.py", "--data", "data"], "portEnv": "PORT" },
+    "status": { "probe": "http", "path": "/healthz", "readyStatus": 200, "startupTimeoutMs": 30000 },
+    "stop": { "signal": "SIGTERM", "graceMs": 3000 },
+    "serving": { "target": "sandbox-loopback", "protocol": "http" }
+  }
+}
