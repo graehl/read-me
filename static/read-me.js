@@ -1,6 +1,7 @@
 // read-me recorder page: one reading request, one speaker, one take at a time.
-// Uploads and accepts run in per-line background queues so moving to the next line never waits;
-// each line's chip shows its take's status as results arrive.
+// Uploads and accepts wait in the upload outbox (browser storage) and go to the server in order in
+// the background, so moving to the next line never waits; each line's chip shows its take's status
+// as results arrive. When unsent audio fills the outbox's budget, Record waits for uploads.
 
 import {
   acceptFailed,
@@ -8,7 +9,6 @@ import {
   acceptSucceeded,
   isLineKept,
   lineStatus,
-  needsUploadRetry,
   newLineState,
   releasableTakes,
   uploadQueued,
@@ -16,11 +16,13 @@ import {
 import { MicCapture, encodeWav24, listAudioInputs, voiceProcessingLeftOn } from "./mic-capture.js";
 import { OWNER_HEADER, ownerToken } from "./owner-token.js";
 import { TAIL_CHECK_SECONDS, analyzeTake, tailSpeechCheck, worstLevel } from "./take-checks.js";
+import { UploadOutbox } from "./upload-outbox.js";
 import { LiveWaveform, clearWaveform, drawTake } from "./waveform.js";
 
 const MAX_TAKE_SECONDS = 85; // with pre-roll and stop extension, under the server's 90 s limit
 const STOP_EXTENSION_SECONDS = 1;
-const UPLOAD_RETRY_DELAYS_MS = [2000, 5000, 10000];
+/** Room a take is assumed to need before Record is allowed: a long line at 24 bits. */
+const TYPICAL_TAKE_SECONDS = 15;
 const $ = (id) => document.getElementById(id);
 // The speaker field's pattern attribute is the page's one copy of the server's path-safe id rule.
 const speakerIdPattern = () => new RegExp(`^(?:${$("speaker-name").pattern})$`);
@@ -33,8 +35,7 @@ const app = {
   lineIndex: 0,
   mode: "idle", // idle | recording | stopping | review
   lines: new Map(), // line id -> line-progress.js line state
-  queues: new Map(), // line id -> tail of that line's upload/accept chain
-  pendingJobs: 0,
+  outbox: null,
   captureSettings: null,
   autoStopTimer: 0,
   wakeLock: null,
@@ -68,19 +69,7 @@ async function fetchJson(url, options) {
   return body;
 }
 
-/** Run `job` after the line's earlier jobs: an accept follows its upload, and accepts land in order. */
-function enqueue(line, job) {
-  app.pendingJobs++;
-  const run = (app.queues.get(line.id) ?? Promise.resolve()).then(job).finally(() => {
-    app.pendingJobs--;
-    releaseTakeAudio(lineState(line));
-    renderChips();
-  });
-  app.queues.set(line.id, run.catch(() => {}));
-  return run;
-}
-
-/** Drop superseded takes' audio once stored, so a long session does not exhaust a phone's memory. */
+/** Drop superseded takes' audio once it is safe elsewhere, so a long session does not exhaust a phone's memory. */
 function releaseTakeAudio(state) {
   for (const take of releasableTakes(state)) {
     URL.revokeObjectURL(take.url);
@@ -90,74 +79,80 @@ function releaseTakeAudio(state) {
 
 // --- uploads and acceptance ---------------------------------------------------------
 
-async function uploadTake(line, take) {
-  const report = {
-    client_take_index: take.index,
-    capture: take.capture,
-    checks: take.analysis,
-    worst_level: take.level,
-  };
-  const url = `${speakerBase()}/lines/${encodeURIComponent(line.id)}/takes`;
-  for (let attempt = 0; ; attempt++) {
-    try {
-      take.upload = "uploading";
-      renderChips();
-      const saved = await fetchJson(url, {
-        method: "POST",
-        headers: {
-          "Content-Type": "audio/wav",
-          "X-Read-Me-Take": encodeURIComponent(JSON.stringify(report)),
-          [OWNER_HEADER]: ownerToken(),
-        },
-        body: take.wav,
-      });
-      take.takeId = saved.take_id;
-      take.upload = "saved";
-      return;
-    } catch (error) {
-      if (attempt >= UPLOAD_RETRY_DELAYS_MS.length) {
-        take.upload = "error";
-        take.uploadError = String(error.message || error);
-        throw error;
-      }
-      await new Promise((r) => setTimeout(r, UPLOAD_RETRY_DELAYS_MS[attempt]));
-    }
-  }
-}
+const lineNumber = (line) => app.request.lines.indexOf(line) + 1;
 
-function saveTake(line, take) {
-  uploadQueued(take);
-  take.uploaded = enqueue(line, () => uploadTake(line, take));
+async function saveTake(line, take) {
+  const state = lineState(line);
+  take.key = crypto.randomUUID();
+  app.outbox.listen(take.key, {
+    stored(takeId) {
+      take.takeId = takeId;
+      take.upload = "saved";
+      releaseTakeAudio(state);
+      render();
+    },
+    accepted() {
+      acceptSucceeded(state, take);
+      renderChips();
+    },
+    refused(error) {
+      if (take.upload !== "saved") {
+        take.upload = "error";
+        take.uploadError = error.message;
+      }
+      if (take.accept === "pending") acceptFailed(state, take);
+      $("status").textContent = `Line ${lineNumber(line)} was not saved: ${error.message}. Record it again.`;
+      render();
+    },
+  });
+  const report = { client_take_index: take.index, capture: take.capture, checks: take.analysis, worst_level: take.level };
+  const headers = {
+    "Content-Type": "audio/wav",
+    "X-Read-Me-Take": encodeURIComponent(JSON.stringify(report)),
+    [OWNER_HEADER]: ownerToken(),
+  };
+  try {
+    await app.outbox.addTake(take.key, `${speakerBase()}/lines/${encodeURIComponent(line.id)}/takes`, headers, take.wav);
+    uploadQueued(take, app.outbox.store.durable);
+  } catch (error) {
+    // Browser storage refused the take (full, or private browsing): it cannot be sent later.
+    take.upload = "error";
+    take.uploadError = `this browser could not store it (${error.message})`;
+  }
+  render();
 }
 
 function acceptTake(line, take, override) {
-  const state = lineState(line);
-  acceptStarted(state, take, override);
-  enqueue(line, async () => {
-    await take.uploaded;
-    await fetchJson(`${speakerBase()}/lines/${encodeURIComponent(line.id)}/accept`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ take_id: take.takeId, override }),
-    });
-    acceptSucceeded(state, take);
-  }).catch((error) => {
-    acceptFailed(state, take);
-    $("status").textContent = `Line ${app.request.lines.indexOf(line) + 1} was not saved: ${error.message}. Tap it to retry.`;
-  });
+  acceptStarted(lineState(line), take, override);
+  const url = `${speakerBase()}/lines/${encodeURIComponent(line.id)}/accept`;
+  app.outbox.addAccept(url, override, take.takeId ? { takeId: take.takeId, takeKey: take.key } : { takeKey: take.key });
 }
 
-function retryFailedSaves(line) {
-  const take = latestTake(line);
-  if (!take) return;
-  if (needsUploadRetry(take)) saveTake(line, take);
-  if (take.accept === "error") acceptTake(line, take, take.override);
+/** Whether unsent audio leaves room for another take; Record waits while it does not. */
+function outboxHasRoom() {
+  return app.outbox.hasRoomFor(TYPICAL_TAKE_SECONDS * app.mic.sampleRate * 3);
+}
+
+function renderBacklog() {
+  const { pendingTakes, pendingBytes, waiting, store } = app.outbox;
+  const box = $("backlog");
+  if (pendingTakes === 0) {
+    box.hidden = true;
+    return;
+  }
+  const mb = (pendingBytes / 1e6).toFixed(1);
+  const parts = [`Sending ${pendingTakes} recording${pendingTakes === 1 ? "" : "s"} (${mb} MB)`];
+  if (waiting) parts.push("connection problem, retrying");
+  if (!outboxHasRoom()) parts.push("Record waits until more are sent");
+  parts.push(store.durable ? "they resume if you leave and come back" : "keep this page open until they are sent");
+  box.textContent = `${parts.join(" · ")}.`;
+  box.hidden = false;
 }
 
 // --- recording ----------------------------------------------------------------------
 
 async function startRecording() {
-  if (app.mode === "recording" || app.mode === "stopping") return;
+  if (app.mode === "recording" || app.mode === "stopping" || !outboxHasRoom()) return;
   $("player").pause();
   app.mode = "recording";
   app.live.reset();
@@ -224,7 +219,6 @@ const isAccepted = (line) => isLineKept(lineState(line));
 function goToLine(index) {
   if (app.mode === "recording" || app.mode === "stopping") return;
   app.lineIndex = Math.max(0, Math.min(app.request.lines.length - 1, index));
-  retryFailedSaves(currentLine());
   app.mode = latestTake(currentLine()) ? "review" : "idle";
   $("status").textContent = "";
   render();
@@ -264,7 +258,7 @@ const CHIP_STATUS = {
   ok: ["✓", "kept"],
   warn: ["!", "kept, with a warning"],
   fail: ["✕", "kept despite a problem"],
-  error: ["⚠", "not saved; tap to retry"],
+  error: ["⚠", "not saved; record it again"],
   earlier: ["✓", "kept earlier"],
 };
 
@@ -305,7 +299,11 @@ function renderFindings(take, line) {
     return;
   }
   if (!take) {
-    const message = state.keptTakeId ? "Recorded earlier. Record again to replace it." : "Tap Record, read the line, tap Stop.";
+    const message = !outboxHasRoom()
+      ? "Waiting for earlier recordings to upload before recording more."
+      : state.keptTakeId
+        ? "Recorded earlier. Record again to replace it."
+        : "Tap Record, read the line, tap Stop.";
     const items = [textItem(message, "info")];
     const leftOn = voiceProcessingLeftOn(app.captureSettings);
     if (leftOn.length) items.push(textItem(`This browser kept ${leftOn.join(", ")} on; recordings may be processed.`, "warn"));
@@ -346,7 +344,7 @@ function render() {
   const record = $("record");
   const armed = app.mode === "recording";
   record.textContent = armed ? "Stop" : "Record";
-  record.disabled = app.mode === "stopping";
+  record.disabled = app.mode === "stopping" || (!armed && !outboxHasRoom());
   record.classList.toggle("recording", armed);
   $("take").classList.toggle("armed", armed);
   $("mic-select").disabled = armed || app.mode === "stopping";
@@ -356,6 +354,7 @@ function render() {
   $("next").disabled = !(canKeep || canSkipAhead || (take && (take.accept === "accepted" || take.accept === "pending")));
   renderFindings(take, line);
   renderChips();
+  renderBacklog();
 }
 
 // --- setup --------------------------------------------------------------------------
@@ -415,6 +414,17 @@ async function switchMicrophone(deviceId) {
   render();
 }
 
+/** Re-read which take the server keeps for each line, for lines this page has not recorded. */
+async function refreshProgress() {
+  const progress = await fetchJson(`${speakerBase()}/progress`).catch(() => null);
+  if (!progress) return;
+  for (const line of app.request.lines) {
+    const state = lineState(line);
+    if (state.takes.length === 0) state.keptTakeId = progress.accepted[line.id] ?? null;
+  }
+  render();
+}
+
 async function startSession(speaker) {
   app.speaker = speaker;
   localStorage.setItem("read-me.speaker", speaker);
@@ -441,8 +451,16 @@ async function startSession(speaker) {
     return false;
   }
   $("fatal").hidden = true;
+  app.outbox = await UploadOutbox.open({ onChange: () => app.live && render() });
+  // A manual cap on unsent audio, for a slow-connection test or a device short of storage.
+  const cap = Number(localStorage.getItem("read-me.outbox-budget-bytes"));
+  if (cap > 0) app.outbox.budgetBytes = Math.min(app.outbox.budgetBytes, cap);
+  // Accepts an earlier visit left unsent count as kept now, so Next does not send the speaker back.
+  const queuedAccepts = await app.outbox.queuedAcceptUrls();
   for (const line of app.request.lines) {
-    app.lines.set(line.id, newLineState(progress.accepted[line.id] ?? null));
+    const acceptUrl = `${speakerBase()}/lines/${encodeURIComponent(line.id)}/accept`;
+    const queued = queuedAccepts.has(acceptUrl) ? "queued" : null;
+    app.lines.set(line.id, newLineState(progress.accepted[line.id] ?? queued));
   }
   $("setup").hidden = true;
   $("guide").open = false;
@@ -452,8 +470,12 @@ async function startSession(speaker) {
   clearWaveform($("waveform"));
   keepScreenOn();
   fillMicPicker();
-  const first = app.request.lines.findIndex((line) => !progress.accepted[line.id]);
+  const first = app.request.lines.findIndex((line) => !isAccepted(line));
   goToLine(first < 0 ? 0 : first);
+  if (app.outbox.pendingTakes || queuedAccepts.size) {
+    app.outbox.kick();
+    app.outbox.idle().then(refreshProgress);
+  }
   return true;
 }
 
@@ -486,7 +508,7 @@ function bindControls() {
     if (document.visibilityState === "visible" && app.mic && (!app.wakeLock || app.wakeLock.released)) keepScreenOn();
   });
   window.addEventListener("beforeunload", (event) => {
-    if (app.pendingJobs > 0) event.preventDefault();
+    if (app.outbox && !app.outbox.store.durable && app.outbox.pendingTakes > 0) event.preventDefault();
   });
 }
 

@@ -131,6 +131,26 @@ a failed check, ⚠ not saved). A failed check disables Next; "Use this take
 anyway" overrides it, and the override is recorded. On desktop: Space
 records/stops, Enter keeps, R retries, arrows move between lines.
 
+### Slow connections and full storage
+
+Each take is uploaded as 24-bit WAV at the capture rate: about 1.1 Mbit/s
+of recorded audio at 48 kHz, so a weak mobile uplink can fall behind the
+speaker. Takes and keeps therefore wait in an outbox in the browser's
+IndexedDB storage and go to the server one at a time, oldest first. A
+network failure is retried until it succeeds; an outbox entry is removed
+only once the server has stored it. Leaving or reloading the page loses
+nothing: the next visit to the recorder sends what is left, and lines whose
+keep is still waiting count as kept.
+
+The outbox holds at most half of the browser's free storage, and never more
+than 500 MB. When the unsent audio plus room for one more take (15 s) would
+exceed that, Record is disabled and the page says it is waiting for uploads.
+A browser without IndexedDB (some private modes) holds the outbox in memory
+with a 64 MB budget and asks the speaker to keep the page open. If the
+browser refuses to store a take, that take shows as not saved. Setting
+`read-me.outbox-budget-bytes` in the site's local storage lowers the budget,
+for testing or for a device short of storage.
+
 ## Your recordings
 
 `/mine` lists every take recorded in the current browser, as

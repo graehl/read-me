@@ -1,4 +1,4 @@
-// Line progress: a failed accept never counts as kept, and only failed uploads are resent.
+// Line progress: a failed accept never counts as kept; superseded audio is released once it is safe.
 import assert from "node:assert/strict";
 import test from "node:test";
 
@@ -8,7 +8,6 @@ import {
   acceptSucceeded,
   isLineKept,
   lineStatus,
-  needsUploadRetry,
   newLineState,
   releasableTakes,
   uploadQueued,
@@ -49,18 +48,15 @@ test("a failed accept keeps the take kept in an earlier session", () => {
   assert.equal(state.keptTakeId, "old");
 });
 
-test("only a failed upload is resent", () => {
-  const take = { upload: "error" };
-  assert.ok(needsUploadRetry(take));
-  uploadQueued(take);
-  assert.ok(!needsUploadRetry(take));
-});
-
-test("superseded stored takes release their audio; the latest and unsaved ones do not", () => {
+test("superseded takes release their audio once stored or durably queued; the latest and memory-only ones do not", () => {
   const state = newLineState();
   const stored = savedTake("t1");
   const unsaved = { ...savedTake(null), upload: "error" };
+  const durable = { ...savedTake(null) };
+  uploadQueued(durable, true);
+  const inMemory = { ...savedTake(null) };
+  uploadQueued(inMemory, false);
   const latest = savedTake("t3");
-  state.takes.push(stored, unsaved, latest);
-  assert.deepEqual(releasableTakes(state), [stored]);
+  state.takes.push(stored, unsaved, durable, inMemory, latest);
+  assert.deepEqual(releasableTakes(state), [stored, durable]);
 });

@@ -26,13 +26,10 @@ export function lineStatus(state) {
   return latest ? "recorded" : "none";
 }
 
-export function uploadQueued(take) {
+/** `persisted`: the upload waits in browser storage that survives a reload, not only in memory. */
+export function uploadQueued(take, persisted) {
   take.upload = "queued";
-}
-
-/** Only a failed upload is resent; a queued or running one is already on its way. */
-export function needsUploadRetry(take) {
-  return take.upload === "error";
+  take.persisted = persisted;
 }
 
 export function acceptStarted(state, take, override) {
@@ -53,7 +50,7 @@ export function acceptFailed(state, take) {
   if (state.pendingAccept === take) state.pendingAccept = null;
 }
 
-/** Takes whose audio the page no longer needs: superseded and already stored on the server. */
+/** Takes whose audio the page no longer needs: superseded, and stored on the server or in browser storage. */
 export function releasableTakes(state) {
-  return state.takes.slice(0, -1).filter((t) => t.upload === "saved" && t.wav);
+  return state.takes.slice(0, -1).filter((t) => t.wav && (t.upload === "saved" || (t.upload === "queued" && t.persisted)));
 }

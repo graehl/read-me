@@ -330,6 +330,12 @@ button.icon {
   display: block;
 }
 
+.backlog {
+  margin: 0.5rem 0 0;
+  font-size: 0.9rem;
+  color: var(--warn);
+}
+
 .findings {
   min-height: 3.6rem;
 }
