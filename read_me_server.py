@@ -19,6 +19,11 @@ Routes:
     GET  /api/mine/takes/<request>/<speaker>/<line>/<take>.flac
     GET  /api/mine/kept.zip             the kept ones, with a takes.tsv manifest
     GET  /api/mine/takes.zip            all of them, retried takes included
+    GET  /owner                         every stored take, after an owner password login
+    POST /api/owner/login               body: {"user", "password"}; sets the owner session cookie
+    GET  /api/owner/takes               list of every take
+    GET  /api/owner/takes/<request>/<speaker>/<line>/<take>.flac
+    GET  /api/owner[/<request>[/<speaker>]]/{kept,takes}.zip
 
 Header X-Read-Me-Owner carries the browser's owner token: optional on take uploads, required on /api/mine.
 """
@@ -37,12 +42,14 @@ import traceback
 import zipfile
 from collections.abc import Callable
 from dataclasses import asdict
+from http.cookies import SimpleCookie
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import unquote, urlsplit
 
+from owner_access import COOKIE_MAX_AGE_S, COOKIE_NAME, OwnerAccounts
 from reading_requests import SAFE_ID_PATTERN, ReadingRequestCatalog, ReadingRequestError, is_safe_id
-from take_store import OwnedTake, TakeRejected, TakeStore, owner_key
+from take_store import ListedTake, TakeRejected, TakeStore, owner_key
 
 REPO_DIR = Path(__file__).resolve().parent
 STATIC_DIR = REPO_DIR / "static"
@@ -72,6 +79,8 @@ ROUTE_PROGRESS = re.compile(SPEAKER_API + r"/progress$")
 ROUTE_TAKES = re.compile(SPEAKER_API + rf"/lines/{ID}/takes$")
 ROUTE_ACCEPT = re.compile(SPEAKER_API + rf"/lines/{ID}/accept$")
 ROUTE_MINE_TAKE = re.compile(rf"^/api/mine/takes/{ID}/{ID}/{ID}/{ID}\.flac$")
+ROUTE_OWNER_TAKE = re.compile(rf"^/api/owner/takes/{ID}/{ID}/{ID}/{ID}\.flac$")
+ROUTE_OWNER_ZIP = re.compile(rf"^/api/owner(?:/{ID}(?:/{ID})?)?/(kept|takes)\.zip$")
 OWNER_HEADER = "X-Read-Me-Owner"
 OWNER_TOKEN = re.compile(r"^[0-9a-f]{32,128}$")
 
@@ -84,24 +93,35 @@ class ReadMeHandler(BaseHTTPRequestHandler):
     server_version = "read-me/0.1"
     catalog: ReadingRequestCatalog
     store: TakeStore
+    owners: OwnerAccounts
 
     def log_message(self, format: str, *args: object) -> None:
         sys.stderr.write(f"[http] {self.address_string()} {format % args}\n")
 
-    def send_body(self, status: int, body: bytes, content_type: str, download_name: str | None = None) -> None:
+    def send_body(
+        self,
+        status: int,
+        body: bytes,
+        content_type: str,
+        download_name: str | None = None,
+        set_cookie: str | None = None,
+    ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         if download_name:
             self.send_header("Content-Disposition", f'attachment; filename="{download_name}"')
+        if set_cookie:
+            self.send_header("Set-Cookie", set_cookie)
         for name, value in SECURITY_HEADERS.items():
             self.send_header(name, value)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(body)
 
-    def send_json(self, status: int, doc: object) -> None:
-        self.send_body(status, json.dumps(doc, ensure_ascii=False).encode(), "application/json; charset=utf-8")
+    def send_json(self, status: int, doc: object, set_cookie: str | None = None) -> None:
+        body = json.dumps(doc, ensure_ascii=False).encode()
+        self.send_body(status, body, "application/json; charset=utf-8", set_cookie=set_cookie)
 
     def send_error_json(self, status: int, message: str) -> None:
         self.send_json(status, {"error": message})
@@ -151,7 +171,53 @@ class ReadMeHandler(BaseHTTPRequestHandler):
             return self.send_static("mine.html")
         if path.startswith("/api/mine"):
             return self.send_owned_takes(path)
+        if path == "/owner":
+            return self.send_static("owner.html")
+        if path.startswith("/api/owner"):
+            return self.send_all_takes(path)
         self.send_error_json(404, "Not found")
+
+    def send_all_takes(self, path: str) -> None:
+        """The owner's view: every stored take, by request and speaker, after a password login."""
+        cookies = SimpleCookie(self.headers.get("Cookie") or "")
+        if self.owners.session_user(cookies[COOKIE_NAME].value if COOKIE_NAME in cookies else None) is None:
+            return self.send_error_json(401, "Owner login required")
+        takes = self.store.all_takes()
+        if path == "/api/owner/takes":
+            return self.send_json(200, {"takes": [listed_take_json(take, "/api/owner/takes") for take in takes]})
+        if m := ROUTE_OWNER_ZIP.match(path):
+            request_id, speaker, which = m.groups()
+            chosen = [
+                take
+                for take in takes
+                if request_id in (None, take.request_id)
+                and speaker in (None, take.speaker)
+                and (which == "takes" or take.accepted)
+            ]
+            name = "-".join(["read-me", *filter(None, [request_id, speaker]), which]) + ".zip"
+            return self.send_body(200, takes_zip(self.store, chosen), "application/zip", name)
+        if m := ROUTE_OWNER_TAKE.match(path):
+            take = next((t for t in takes if (t.request_id, t.speaker, t.line_id, t.take_id) == m.groups()), None)
+            if take is None:
+                return self.send_error_json(404, "No such take")
+            return self.send_body(200, self.store.take_path(take).read_bytes(), "audio/flac", take.file_name)
+        self.send_error_json(404, "Not found")
+
+    def post_owner_login(self) -> None:
+        try:
+            doc = json.loads(self.read_body())
+        except ValueError as exc:
+            raise BadRequest(f"Login body is not JSON: {exc}") from exc
+        user = doc.get("user") if isinstance(doc, dict) else None
+        password = doc.get("password") if isinstance(doc, dict) else None
+        if not (isinstance(user, str) and is_safe_id(user) and isinstance(password, str) and password):
+            raise BadRequest('Login body must be {"user": <user name>, "password": <non-empty string>}')
+        session = self.owners.log_in(user, password)
+        if session is None:
+            self.log_message("Owner login refused for %s", user)
+            return self.send_error_json(401, "Wrong user name or password")
+        cookie = f"{COOKIE_NAME}={session}; Path=/; Max-Age={COOKIE_MAX_AGE_S}; HttpOnly; SameSite=Strict"
+        self.send_json(200, {"user": user}, set_cookie=cookie)
 
     def request_owner(self) -> str | None:
         """The owner key for this request's owner token, or None when it sent none."""
@@ -168,12 +234,12 @@ class ReadMeHandler(BaseHTTPRequestHandler):
             return self.send_error_json(401, f"Missing {OWNER_HEADER} header")
         takes = self.store.owned_takes(owner)
         if path == "/api/mine":
-            return self.send_json(200, {"takes": [owned_take_json(take) for take in takes]})
+            return self.send_json(200, {"takes": [listed_take_json(take, "/api/mine/takes") for take in takes]})
         if path == "/api/mine/takes.zip":
-            return self.send_body(200, owned_takes_zip(self.store, takes), "application/zip", "read-me-takes.zip")
+            return self.send_body(200, takes_zip(self.store, takes), "application/zip", "read-me-takes.zip")
         if path == "/api/mine/kept.zip":
             kept = [take for take in takes if take.accepted]
-            return self.send_body(200, owned_takes_zip(self.store, kept), "application/zip", "read-me-kept.zip")
+            return self.send_body(200, takes_zip(self.store, kept), "application/zip", "read-me-kept.zip")
         if m := ROUTE_MINE_TAKE.match(path):
             take = next((t for t in takes if (t.request_id, t.speaker, t.line_id, t.take_id) == m.groups()), None)
             if take is None:
@@ -186,6 +252,8 @@ class ReadMeHandler(BaseHTTPRequestHandler):
             return self.post_take(*m.groups())
         if m := ROUTE_ACCEPT.match(path):
             return self.post_accept(*m.groups())
+        if path == "/api/owner/login":
+            return self.post_owner_login()
         self.send_error_json(404, "Not found")
 
     def send_request_index(self) -> None:
@@ -207,7 +275,7 @@ class ReadMeHandler(BaseHTTPRequestHandler):
             '<title>read-me</title><link rel="icon" href="data:,"><link rel="stylesheet" href="static/read-me.css">'
             '<main class="index"><h1>Reading requests</h1><ul>'
             + "".join(items)
-            + '</ul><p><a href="mine">Your recordings</a></p></main></html>'
+            + '</ul><p><a href="mine">Your recordings</a> · <a href="owner">All recordings (owner)</a></p></main></html>'
         )
         self.send_body(200, body.encode(), "text/html; charset=utf-8")
 
@@ -276,14 +344,15 @@ class ReadMeHandler(BaseHTTPRequestHandler):
         )
 
 
-def owned_take_json(take: OwnedTake) -> dict:
+def listed_take_json(take: ListedTake, takes_url: str) -> dict:
+    """A take for a download list; `takes_url` is the route its single-file download sits under."""
     doc = asdict(take)
     doc["file_name"] = take.file_name
-    doc["url"] = f"/api/mine/takes/{take.request_id}/{take.speaker}/{take.line_id}/{take.take_id}.flac"
+    doc["url"] = f"{takes_url}/{take.request_id}/{take.speaker}/{take.line_id}/{take.take_id}.flac"
     return doc
 
 
-def owned_takes_zip(store: TakeStore, takes: list[OwnedTake]) -> bytes:
+def takes_zip(store: TakeStore, takes: list[ListedTake]) -> bytes:
     """A zip of the takes, one folder per speaker code, plus a takes.tsv manifest of line texts."""
     manifest = ["file\trequest\tspeaker\tline\ttake_id\tkept\tduration_s\tline_text"]
     buf = io.BytesIO()
@@ -330,6 +399,7 @@ def main() -> None:
     request_dirs = args.requests or [REPO_DIR / "requests", args.data / "requests"]
     ReadMeHandler.catalog = ReadingRequestCatalog(*request_dirs)
     ReadMeHandler.store = TakeStore(args.data)
+    ReadMeHandler.owners = OwnerAccounts(args.data)
     server = ThreadingHTTPServer((args.host, args.port), ReadMeHandler)
     requests_shown = ",".join(map(str, request_dirs))
     print(

@@ -195,7 +195,8 @@ button.link {
   gap: 0.5rem;
 }
 
-#setup-form input {
+#setup-form input,
+.login input {
   font: inherit;
   min-height: 2.75rem;
   padding: 0 0.75rem;
@@ -443,6 +444,27 @@ button.record.recording {
 .mine .note {
   color: var(--muted);
   margin: 0 0 var(--space);
+}
+
+.login {
+  display: grid;
+  gap: 0.5rem;
+  max-width: 22rem;
+}
+
+.owner h2 button.link,
+.owner summary button.link {
+  font-size: 0.9rem;
+  font-weight: 400;
+  min-height: 0;
+}
+
+.owner details {
+  margin: 0.25rem 0 0.5rem;
+}
+
+.owner summary {
+  cursor: pointer;
 }
 
 .download-zip {

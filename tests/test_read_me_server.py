@@ -20,6 +20,7 @@ from pathlib import Path
 import pytest
 
 import read_me_server
+from owner_access import OwnerAccounts
 from reading_requests import ReadingRequestCatalog, ReadingRequestError, parse_reading_request
 from take_store import TakeStore, owner_key
 
@@ -43,6 +44,7 @@ def tone_wav(seconds: float = 1.5, rate: int = 48000) -> bytes:
 def server(tmp_path: Path):
     read_me_server.ReadMeHandler.catalog = ReadingRequestCatalog(REPO / "requests")
     read_me_server.ReadMeHandler.store = TakeStore(tmp_path)
+    read_me_server.ReadMeHandler.owners = OwnerAccounts(tmp_path)
     httpd = ThreadingHTTPServer(("127.0.0.1", 0), read_me_server.ReadMeHandler)
     thread = threading.Thread(target=httpd.serve_forever, daemon=True)
     thread.start()
@@ -220,3 +222,44 @@ def test_the_recorder_page_takes_the_speaker_in_its_path(server):
         with urllib.request.urlopen(base + path) as resp:
             assert 'id="guide"' in resp.read().decode()
     assert fetch_bytes(f"{base}/r/demo-en/a/b", {})[0] == 404
+
+
+def login(base: str, user: str, password: str) -> tuple[int, str]:
+    """Status and the session cookie pair ("name=value") of an owner login."""
+    body = json.dumps({"user": user, "password": password}).encode()
+    status, _ = call(f"{base}/api/owner/login", body)
+    if status != 200:
+        return status, ""
+    req = urllib.request.Request(f"{base}/api/owner/login", data=body, method="POST")
+    with urllib.request.urlopen(req) as resp:
+        return status, resp.headers["Set-Cookie"].split(";")[0]
+
+
+def test_the_first_owner_login_sets_the_password_and_unlocks_every_take(server):
+    base, data_root = server
+    api = f"{base}/api/requests/demo-en/speakers"
+    upload = {"Content-Type": "audio/wav"}
+    kept = call(f"{api}/a/lines/0001/takes", tone_wav(), upload)[1]["take_id"]
+    call(f"{api}/a/lines/0001/accept", json.dumps({"take_id": kept, "override": False}).encode())
+    call(f"{api}/a/lines/0001/takes", tone_wav(), upload)
+    call(f"{api}/b/lines/0002/takes", tone_wav(), upload)
+
+    assert call(f"{base}/api/owner/takes")[0] == 401
+    status, cookie = login(base, "owner", "first-password")
+    assert status == 200 and (data_root / "owner-accounts.json").is_file()
+    assert "first-password" not in (data_root / "owner-accounts.json").read_text()
+    assert login(base, "owner", "other")[0] == 401
+    assert login(base, "someone", "first-password")[0] == 401
+
+    status, listing = call(f"{base}/api/owner/takes", headers={"Cookie": cookie})
+    assert status == 200 and len(listing["takes"]) == 3
+    assert fetch_bytes(base + listing["takes"][0]["url"], {"Cookie": cookie})[1].startswith(b"fLaC")
+
+    def zip_names(path: str) -> list[str]:
+        with zipfile.ZipFile(io.BytesIO(fetch_bytes(base + path, {"Cookie": cookie})[1])) as z:
+            return sorted(n for n in z.namelist() if n != "takes.tsv")
+
+    assert zip_names("/api/owner/kept.zip") == ["a/demo-en.0001.01.flac"]
+    assert len(zip_names("/api/owner/takes.zip")) == 3
+    assert zip_names("/api/owner/demo-en/b/takes.zip") == ["b/demo-en.0002.01.flac"]
+    assert fetch_bytes(f"{base}/api/owner/takes.zip", {"Cookie": cookie.replace("owner.", "evil.")})[0] == 401

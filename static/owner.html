@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#1d2733">
+  <title>All recordings · read-me</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/static/read-me.css">
+  <script type="module" src="/static/owner.js"></script>
+</head>
+<body>
+  <header class="bar">
+    <h1>All recordings</h1>
+    <span id="take-count" class="count"></span>
+  </header>
+  <main class="mine owner">
+    <form id="login" class="login" hidden>
+      <label for="login-user">User</label>
+      <input id="login-user" name="username" autocomplete="username" value="owner" required>
+      <label for="login-password">Password</label>
+      <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      <button type="submit" class="primary">Log in</button>
+    </form>
+    <div id="download-zip" class="download-zip" hidden>
+      <button id="zip-all" type="button" class="primary">Download kept takes (.zip)</button>
+      <label><input id="include-retried" type="checkbox"> Include retried takes</label>
+    </div>
+    <p id="status" class="status" aria-live="polite"></p>
+    <div id="groups"></div>
+  </main>
+</body>
+</html>

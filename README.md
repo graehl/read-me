@@ -78,6 +78,7 @@ takes/<request>/<speaker>/<line>/<take>.json   line text, request hash, capture
 takes/<request>/<speaker>/accepted.json        line -> accepted take
 takes/<request>/<speaker>/events.jsonl         every take and accept, in order
 owners/<owner key>.jsonl                       takes uploaded by one browser
+owner-accounts.json, owner-cookie-key          owner login (see All recordings)
 ```
 
 The server stores 16 kHz FLAC, the form our recognizers train on, resampled
@@ -146,6 +147,20 @@ grants nothing. This is a courtesy until
 [speaker accounts](gaps/sketches/speaker-accounts.md) replace it. Takes
 uploaded before the token existed are not listed. The zip is built in
 memory, which suits sessions of up to a few hundred takes.
+
+## All recordings (owner)
+
+`/owner` lists every stored take by request and speaker, with single
+downloads and a zip of the kept takes (or all takes) for everything, one
+request, or one speaker. It needs a password login: a standard user name and
+password form, so the browser can save it. The first login, while
+`<data>/owner-accounts.json` does not exist, creates the account with the
+name and password given; later logins must match. The file holds one salted
+PBKDF2-SHA256 hash per user. A login lasts 30 days in an HttpOnly cookie
+signed with a key kept in `<data>/owner-cookie-key`, so a server restart
+does not log the owner out. To reset the password, delete
+`owner-accounts.json` and log in again. There is no rate limit on login
+attempts; the hash cost (600,000 iterations) is the only brake on guessing.
 
 ## Planned work
 

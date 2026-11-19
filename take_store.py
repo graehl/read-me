@@ -47,16 +47,20 @@ class StoredTake:
     source_sample_rate: int
 
 
+TakeRef = tuple[str, str, str, str]
+"""(request id, speaker, line id, take id) of one stored take."""
+
+
 @dataclass(frozen=True)
-class OwnedTake:
-    """One take as listed to the browser that uploaded it."""
+class ListedTake:
+    """One take as listed for download, to the browser that uploaded it or to the owner."""
 
     request_id: str
     speaker: str
     line_id: str
     take_id: str
     number: int
-    """1-based order of this take among the owner's takes of the same line."""
+    """1-based order of this take among the listed takes of the same line."""
     line_text: str
     duration_s: float
     received_at: str
@@ -203,17 +207,15 @@ class TakeStore:
                 f.write(json.dumps(entry) + "\n")
         return StoredTake(take_id=take_id, duration_s=seconds, source_sample_rate=rate)
 
-    def take_path(self, take: OwnedTake) -> Path:
+    def take_path(self, take: ListedTake) -> Path:
         return self.speaker_dir(take.request_id, take.speaker) / take.line_id / f"{take.take_id}.flac"
 
-    def owned_takes(self, owner: str) -> list[OwnedTake]:
+    def owned_takes(self, owner: str) -> list[ListedTake]:
         """The takes one browser uploaded, oldest first; a take whose files are gone is skipped."""
         index = self.root / "owners" / f"{owner}.jsonl"
         if not index.is_file():
             return []
-        accepted_by_speaker: dict[tuple[str, str], dict] = {}
-        numbers: dict[tuple[str, str, str], int] = {}
-        takes = []
+        refs = []
         for raw in index.read_text(encoding="utf-8").splitlines():
             try:
                 entry = json.loads(raw)
@@ -221,7 +223,31 @@ class TakeStore:
                 # An append interrupted mid-line; like a take without a sidecar, it is skipped.
                 print(f"[store] Skipping unreadable owner index line in {index.name}", file=sys.stderr)
                 continue
-            request_id, speaker, line_id, take_id = (entry[k] for k in ("request_id", "speaker", "line_id", "take_id"))
+            refs.append(tuple(entry[k] for k in ("request_id", "speaker", "line_id", "take_id")))
+        return self.listed_takes(refs)
+
+    def all_takes(self) -> list[ListedTake]:
+        """Every stored take, by request, speaker and line, oldest first within a line."""
+        takes_dir = self.root / "takes"
+        # Take ids order by second only, so the sidecar's write time orders takes within a line.
+        found = sorted(
+            (request_dir.name, speaker_dir.name, line_dir.name, sidecar.stat().st_mtime_ns, sidecar.stem)
+            for request_dir in takes_dir.glob("*")
+            for speaker_dir in request_dir.glob("*")
+            for line_dir in speaker_dir.glob("*")
+            if line_dir.is_dir()
+            for sidecar in line_dir.glob("*.json")
+        )
+        return self.listed_takes(
+            [(request_id, speaker, line_id, take_id) for request_id, speaker, line_id, _, take_id in found]
+        )
+
+    def listed_takes(self, refs: list[TakeRef]) -> list[ListedTake]:
+        """The takes `refs` names, in that order; a take whose files are gone is skipped."""
+        accepted_by_speaker: dict[tuple[str, str], dict] = {}
+        numbers: dict[tuple[str, str, str], int] = {}
+        takes = []
+        for request_id, speaker, line_id, take_id in refs:
             speaker_dir = self.speaker_dir(request_id, speaker)
             sidecar_path = speaker_dir / line_id / f"{take_id}.json"
             if not (sidecar_path.is_file() and sidecar_path.with_suffix(".flac").is_file()):
@@ -235,7 +261,7 @@ class TakeStore:
             line_key = (request_id, speaker, line_id)
             numbers[line_key] = numbers.get(line_key, 0) + 1
             takes.append(
-                OwnedTake(
+                ListedTake(
                     request_id=request_id,
                     speaker=speaker,
                     line_id=line_id,
